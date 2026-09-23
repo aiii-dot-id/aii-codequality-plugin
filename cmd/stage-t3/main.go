@@ -45,6 +45,8 @@ func run() error {
 	var m struct {
 		ID, Version, Title, Description, Publisher, License, Homepage string
 		PluginFamily                                                  string             `json:"plugin_family"`
+		AiiosMin                                                      string             `json:"aiios_min_version"`
+		AiiosMax                                                      string             `json:"aiios_max_exclusive_version"`
 		Envelope                                                      []string           `json:"capability_envelope"`
 		Interfaces                                                    map[string][]iface `json:"interfaces"`
 		Variants                                                      []variant          `json:"variants"`
@@ -55,6 +57,14 @@ func run() error {
 	spec := map[string]any{"id": m.ID, "version": m.Version, "title": m.Title, "description": m.Description,
 		"publisher": m.Publisher, "license": m.License, "homepage": m.Homepage, "plugin_family": m.PluginFamily,
 		"capability_envelope": m.Envelope}
+	// The host window travels too: a signed bundle without it would be
+	// offered to hosts the release says it cannot run on.
+	if m.AiiosMin != "" {
+		spec["aiios_min_version"] = m.AiiosMin
+	}
+	if m.AiiosMax != "" {
+		spec["aiios_max_exclusive_version"] = m.AiiosMax
+	}
 	var ifaces []any
 	for _, list := range m.Interfaces {
 		for _, i := range list {
