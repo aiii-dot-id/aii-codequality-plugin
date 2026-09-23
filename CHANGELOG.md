@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.6
+
+- **`report`'s `path` reaches every folder.** The filter matched each glob against whole paths
+  with a single-segment `*`, so `**` returned the top level only and `internal/**` nothing. A
+  glob now matches within each segment, `**` spans any depth, and a glob naming a folder holds
+  every file below it.
+- **`total_records` counts what the pages return**: the files under the path, in the language,
+  with a finding at the severity asked for. It used to count every file under the path.
+
 ## 0.1.5
 
 - **Findings and leads.** A blind review of 76 Go files measured how often each statement's

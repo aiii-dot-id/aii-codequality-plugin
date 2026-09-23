@@ -370,9 +370,48 @@ func TestSummaryAndPage(t *testing.T) {
 	if s["index"] != 60 || s["chunks_judged"] != 2 {
 		t.Fatalf("%v", s)
 	}
-	page, next := Page(recs, 0, 1<<20, "medium", "")
+	page, next := Page(Select(recs, ".", "medium", ""), 0, 1<<20)
 	if len(page) != 1 || len(page[0].Findings) != 1 || next != -1 {
 		t.Fatalf("%+v %d", page, next)
+	}
+}
+
+// The globs a resident reached for on a real scan (2026-09-23): "**" and "internal/**" came back
+// with the top level only and with nothing, and a report counted a file it did not return.
+func TestSelectReachesNestedFilesAndCountsWhatItReturns(t *testing.T) {
+	refs := []string{"main.go", "internal/plan/plan.go", "internal/plan/plan_test.go", "internal/transcript/round_test.go"}
+	for glob, want := range map[string]string{
+		"":                   "1111",
+		".":                  "1111",
+		"**":                 "1111",
+		"*":                  "1111",
+		"*.go":               "1000",
+		"**/*.go":            "1111",
+		"**/*_test.go":       "0011",
+		"internal/**":        "0111",
+		"internal":           "0111",
+		"./internal/plan/":   "0110",
+		"internal/*/plan.go": "0100",
+		"internal/**/*.go":   "0111",
+		"plan":               "0000",
+		"internal/plan.go":   "0000",
+		"[":                  "0000",
+	} {
+		got := ""
+		for _, r := range refs {
+			got += map[bool]string{true: "1", false: "0"}[Match(glob, r)]
+		}
+		if got != want {
+			t.Errorf("Match(%q) = %s, want %s", glob, got, want)
+		}
+	}
+	recs := []Record{
+		{Ref: "internal/plan/plan.go", Language: "go", Findings: []Finding{{ID: "EH-01", Severity: "high"}}},
+		{Ref: "internal/transcript/round_test.go", Language: "go", Findings: []Finding{{ID: "RD-03", Severity: "low"}}},
+		{Ref: "main.go", Language: "go", Findings: []Finding{{ID: "EH-01", Severity: "high"}}},
+	}
+	if got := Select(recs, "internal/**", "medium", "go"); len(got) != 1 || got[0].Ref != "internal/plan/plan.go" {
+		t.Fatalf("a record with no finding at the severity asked for is not selected, and so not counted: %+v", got)
 	}
 }
 

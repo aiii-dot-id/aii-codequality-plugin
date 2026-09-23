@@ -51,7 +51,7 @@
     "path": {
       "type": "string",
       "maxLength": 512,
-      "description": "findings: a glob over the file paths."
+      "description": "findings: the files under a glob — a folder (\"internal\"), \"*\" within a name, \"**\" for any depth (\"**/*_test.go\"); \".\" or none is every file."
     }
   },
   "additionalProperties": false

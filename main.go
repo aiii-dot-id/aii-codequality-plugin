@@ -616,22 +616,14 @@ func report(c sdk.Call) (any, error) {
 	}
 	lang, _ := args.String("language")
 	lang = strings.ToLower(lang)
-	var filtered []cq.Record
-	if glob, _ := args.String("path"); glob != "" && glob != "." {
-		for _, r := range recs {
-			if ok, _ := path.Match(glob, r.Ref); ok || strings.HasPrefix(r.Ref, strings.TrimSuffix(glob, "*")) {
-				filtered = append(filtered, r)
-			}
-		}
-	} else {
-		filtered = recs
-	}
-	page, next := cq.Page(filtered, int(cursor), pageBytes, minSev, lang)
+	glob, _ := args.String("path")
+	selected := cq.Select(recs, glob, minSev, lang)
+	page, next := cq.Page(selected, int(cursor), pageBytes)
 	raw, err := recordsJSON(page)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"records": raw, "faults": cq.FaultsOf(page), "next_cursor": next, "total_records": len(filtered)}, nil
+	return map[string]any{"records": raw, "faults": cq.FaultsOf(page), "next_cursor": next, "total_records": len(selected)}, nil
 }
 
 // recordsJSON encodes records for a result. The kit's result encoder takes maps, slices and

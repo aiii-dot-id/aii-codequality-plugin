@@ -1,6 +1,6 @@
 {
   "id": "id.aiii.codequality",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "aiios_min_version": "0.1.10",
   "plugin_family": "tool_bridge",
   "publisher": "AIII",

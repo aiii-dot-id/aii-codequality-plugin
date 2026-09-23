@@ -7,7 +7,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"path"
 	"sort"
+	"strings"
 )
 
 // ParseRecords reads a results file: one JSON record per line.
@@ -116,14 +118,12 @@ func Summary(recs []Record, worst int) map[string]any {
 
 var severityRank = map[string]int{"low": 0, "medium": 1, "high": 2}
 
-// Page returns the records from offset on whose findings pass the filter, until pageBytes of
-// JSON is reached, and the offset to continue from (-1 when there is no more).
-func Page(recs []Record, offset, pageBytes int, minSeverity, language string) ([]Record, int) {
+// Select returns the records under glob (see Match; "" or "." is every record) in language ("" is
+// any), each keeping only its findings at minSeverity or above; a record left with none is dropped.
+func Select(recs []Record, glob, minSeverity, language string) []Record {
 	var out []Record
-	size := 0
-	for i := offset; i < len(recs); i++ {
-		r := recs[i]
-		if language != "" && r.Language != language {
+	for _, r := range recs {
+		if language != "" && r.Language != language || !Match(glob, r.Ref) {
 			continue
 		}
 		kept := r.Findings[:0:0]
@@ -132,10 +132,57 @@ func Page(recs []Record, offset, pageBytes int, minSeverity, language string) ([
 				kept = append(kept, f)
 			}
 		}
-		if len(kept) == 0 {
-			continue
+		if len(kept) > 0 {
+			r.Findings = kept
+			out = append(out, r)
 		}
-		r.Findings = kept
+	}
+	return out
+}
+
+// Match reports whether a file path is under a glob: path.Match within each segment, "**" for
+// any number of segments, and a glob that names a folder holds every file below it — so "**",
+// "internal/**" and "internal" all reach internal/plan/plan.go, and "*.go" only the top level.
+func Match(glob, ref string) bool {
+	glob = path.Clean(glob)
+	if glob == "." {
+		return true
+	}
+	parts := strings.Split(ref, "/")
+	at := make([]bool, len(parts)+1) // at[j]: the glob so far matches parts[:j]
+	at[0] = true
+	for _, g := range strings.Split(glob, "/") {
+		next := make([]bool, len(parts)+1)
+		for j, ok := range at {
+			switch {
+			case !ok:
+			case g == "**":
+				for k := j; k <= len(parts); k++ {
+					next[k] = true
+				}
+			case j < len(parts):
+				if m, _ := path.Match(g, parts[j]); m {
+					next[j+1] = true
+				}
+			}
+		}
+		at = next
+	}
+	for _, ok := range at {
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// Page returns the records from offset on until pageBytes of JSON is reached, and the offset to
+// continue from (-1 when there is no more).
+func Page(recs []Record, offset, pageBytes int) ([]Record, int) {
+	var out []Record
+	size := 0
+	for i := max(offset, 0); i < len(recs); i++ {
+		r := recs[i]
 		MarkLeads([]Record{r})
 		r.Answers = nil
 		b, _ := json.Marshal(r)
