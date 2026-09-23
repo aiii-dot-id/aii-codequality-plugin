@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 package cq
 
 import (
@@ -17,12 +20,7 @@ type Item struct {
 // Penalty per severity, deducted from the item's dimension.
 var Penalty = map[string]int{"low": 5, "medium": 12, "high": 25}
 
-// Catalogue general.v3, measured on Jev 1.13.0 over 76 source files in eight languages at 0–4
-// injected faults and 120 expert-rated Java classes. Against the first wording (general.v1):
-// ID-GO-02 fired on 8/10 unmodified Go files and now on 0/10; DF-02 rose with an injected
-// bounds fault on 9/15 and now on 12/15; RD-03 and DF-01 fired on 72/76 and 70/76 unmodified
-// files (a constant penalty) and now on 40/76 and 32/76, separating the expert classes at AUC
-// 0.90 and 0.92.
+// The general items, asked of every language's code.
 var general = []Item{
 	{"RD-01", "readability", "low", "a name hides what it holds or does"},
 	{"RD-02", "readability", "medium", "control flow needs re-reading to follow"},

@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 // id.aiii.codequality — measures source code quality with Jev as the judge.
 //
 // judge  asks the catalogue about texts the caller passes in.
@@ -31,9 +34,8 @@ const (
 	jevModels  = "https://api.typesafe.ai/v1/models"
 	jevDefault = "jev-latest"
 	// A step must end inside the host's 30 s invoke wall, and a guest has no clock to watch it:
-	// the bound is calls × timeout, 24 s. Jev answered 848 direct calls at a median 0.23 s, p99
-	// 0.37 s, max 0.50 s (the validation grid), and a live identity's calls through the host took
-	// at most about 0.67 s; 2 s is three times that, and twelve calls fit.
+	// the bound is calls × timeout, 24 s. Jev answers a call in well under a second; 2 s is three
+	// times the slowest call measured through the host, and twelve calls fit.
 	callTimeout = 2000 // ms per Jev call
 	maxCalls    = 12
 	readPage    = 512 << 10 // below the frame budget once base64-encoded
@@ -614,10 +616,9 @@ func report(c sdk.Call) (any, error) {
 }
 
 // recordsJSON encodes records for a result. The kit's result encoder takes maps, slices and
-// primitives but no struct — its reflection is what TinyGo cannot run — so a result carrying
-// records hands them over already encoded; encoding/json encodes them, as scan does for its
-// results file. None encodes as an empty list; a record that cannot be encoded fails the call,
-// by name, rather than go missing from it.
+// primitives but no struct, so a result carrying records hands them over already encoded, as
+// scan does for its results file. None encodes as an empty list; a record that cannot be
+// encoded fails the call, by name, rather than go missing from it.
 func recordsJSON(recs []cq.Record) (json.RawMessage, error) {
 	if len(recs) == 0 {
 		return json.RawMessage("[]"), nil

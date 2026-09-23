@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 package cq
 
 import (
@@ -25,15 +28,14 @@ type Cache interface {
 // ErrJudge wraps a transient judge failure: the call did not produce answers; retrying later may.
 var ErrJudge = errors.New("judge unavailable")
 
-// ErrRefused wraps a refusal of this particular text by the judge's service: Jev's hosted edge
-// blocks some legitimate source (its firewall has refused a Markdown file quoting a python -c
-// command). Retrying cannot help; the text is recorded as not judged.
+// ErrRefused wraps the judge's service declining this particular text. Retrying cannot help; the
+// text is recorded as not judged.
 var ErrRefused = errors.New("judge refused this text")
 
 // JudgeReply reads Jev's answer to one call by its HTTP status. 200 carries the answers. 429
 // and 5xx are the service being unavailable: ErrJudge, and the next step retries. A 401, or a
 // 403 answered in JSON, is the key being refused — no retry fixes it until the operator pastes
-// a key that works. A 403 page from Jev's edge, and any other 4xx, is Jev declining this text:
+// a key that works. A 403 page from Jev, and any other 4xx, is Jev declining this text:
 // ErrRefused, and the scan records the file and moves on. Status 0 is no answer at all.
 func JudgeReply(status int, body []byte) (map[string]float64, error) {
 	switch {
@@ -44,7 +46,7 @@ func JudgeReply(status int, body []byte) (map[string]float64, error) {
 	case status == 401 || status == 403 && json.Valid(body):
 		return nil, fmt.Errorf("%w (%d): paste a key that works on the plugin's card", ErrKey, status)
 	case status == 403:
-		return nil, fmt.Errorf("%w: Jev's edge answered 403 with a page, not JSON", ErrRefused)
+		return nil, fmt.Errorf("%w: Jev answered 403 with a page, not JSON", ErrRefused)
 	}
 	return nil, fmt.Errorf("%w: Jev answered %d: %.200s", ErrRefused, status, body)
 }

@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 //go:build !wasm_unknown
 
 // stage-t3 turns the tree 'aiisdk package' staged into the staging directory the T3 signing

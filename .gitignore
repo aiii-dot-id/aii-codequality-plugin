@@ -1,4 +1,3 @@
 dist/
-.keys/
 *.wasm
 *.aiiospkg

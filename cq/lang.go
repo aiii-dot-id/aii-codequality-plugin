@@ -1,7 +1,9 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 // Package cq is the code-quality judge's core: language detection, comment blanking, secret
 // redaction, the fault catalogue, the Jev wire, scoring, and the tree walk. It touches the world
-// only through the FS, Judge and Cache interfaces, so the plugin binds it to the host's
-// hostcalls and cmd/cqvalidate binds it to the local disk and Jev directly.
+// only through the FS, Judge and Cache interfaces, which the plugin binds to the host's calls.
 package cq
 
 import (
@@ -14,7 +16,7 @@ import (
 	"strings"
 )
 
-// annex_l.json is Annex L of the design (the language table), extracted verbatim.
+// annex_l.json is the language table.
 //
 //go:embed annex_l.json
 var annexJSON []byte
@@ -119,8 +121,6 @@ func LoadTable() (*Table, error) {
 	return t, nil
 }
 
-// Detect names a file's language from its path and first bytes, or "" when it is not a language
-// the table knows.
 // Languages holds names a caller gave to the table: each is matched in any case and answered in
 // the table's own spelling; a name the table does not know is refused, listing the ones it does,
 // because a filter that silently matched nothing would read as a scan that found nothing.
@@ -141,6 +141,8 @@ func (t *Table) Languages(names []string) ([]string, error) {
 	return out, nil
 }
 
+// Detect names a file's language from its path and first bytes, or "" when it is not a language
+// the table knows.
 func (t *Table) Detect(rel string, head []byte) string {
 	base := path.Base(rel)
 	if k, ok := specialFilenames[base]; ok && t.Langs[k] != nil {

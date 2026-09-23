@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 //go:build !wasm_unknown
 
 package cq
@@ -8,7 +11,7 @@ import (
 	"path/filepath"
 )
 
-// OSFS is the FS of a directory on the local disk, for tests and cmd/cqvalidate. Paths are
+// OSFS is the FS of a directory on the local disk, for tests. Paths are
 // slash-relative to Root; symlinks are reported, never followed.
 type OSFS struct {
 	Root     string

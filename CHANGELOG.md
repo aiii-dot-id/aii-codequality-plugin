@@ -3,8 +3,7 @@
 ## 0.1.4
 
 - **`report`'s findings and `judge`'s results reach the caller.** Both returned records as Go
-  structs, which the plugin kit's result encoder does not take (its reflection is what TinyGo
-  cannot run), so each call failed as a bare `PLUGIN_HANDLER_FAILED`. Records are now handed
+  structs, which the plugin kit's result encoder does not take, so each call failed as a bare `PLUGIN_HANDLER_FAILED`. Records are now handed
   over already encoded.
 - **Every error leaves named.** The kit keeps the words of an operation error and drops the
   text of any other, so a Jev outage, a refused key or a failed read also reached the caller as
@@ -26,7 +25,7 @@
 - **Jev's status decides what a failed call means.** The host hands a 4xx or 5xx back as the
   response and an error; 0.1.2 read only the error, so every failure was taken as "Jev is
   unavailable" and a text Jev declines was retried at every step, holding the scan on that file.
-  Now 429 and 5xx are retried at the next step; a 403 page from Jev's edge, or any other 4xx,
+  Now 429 and 5xx are retried at the next step; a 403 page from Jev, or any other 4xx,
   records that file as refused and the scan moves on; a 401, or a 403 in JSON, says the key was
   refused. The status is kept in `last_error`, which also says the next step retries the file.
 - **Languages are named in any case.** `["Go"]` selected nothing in 0.1.2: every Go file was
@@ -76,4 +75,4 @@ First release.
   `.gitattributes` and the caller's excludes. It skips nested repositories, symlinks,
   secret-named, binary, generated, minified, oversize and test files, and counts every skip by
   reason.
-- A text Jev's hosted edge refuses is recorded under `refused`, and the scan moves on.
+- A text Jev declines is recorded under `refused`, and the scan moves on.
