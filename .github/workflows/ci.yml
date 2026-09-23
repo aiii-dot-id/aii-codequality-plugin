@@ -13,8 +13,8 @@ jobs:
     name: Native harness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
       - name: Format
@@ -39,11 +39,11 @@ jobs:
       AII_OS_VERSION: "0.1.8"
       AII_OS_SHA256: "06cbd6c283cdcfe498f471721322c5feb709293808a383bc80fc45e83f2b08b4"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
-      - uses: acifani/setup-tinygo@v2
+      - uses: acifani/setup-tinygo@v3
         with:
           tinygo-version: "0.42.0"
       - name: Build the guest module
