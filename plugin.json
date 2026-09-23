@@ -1,0 +1,88 @@
+{
+  "id": "id.aiii.codequality",
+  "version": "0.1.0",
+  "plugin_family": "tool_bridge",
+  "publisher": "AIII",
+  "title": "Code quality (Jev)",
+  "description": "Measures source code quality with TypeSafe's Jev as the judge: a fixed catalogue of fault statements asked about each file's code and, separately, its comments; answers scored into findings, six dimension scores, an index and a band. Judges texts passed in, or scans a granted folder a few files per call.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/aiii-dot-id/aii-codequality-plugin",
+  "interface": {
+    "id": "id.aiii.codequality.core",
+    "version": 1
+  },
+  "capability_envelope": [
+    "net.outbound:api.typesafe.ai:443",
+    "fs.roots",
+    "fs.private"
+  ],
+  "variants": [
+    {
+      "variant_id": "linux-x86_64-wasm",
+      "platform": "linux",
+      "arch": "x86_64",
+      "topology": "full_identity_host",
+      "execution_runtime": "wasm_component",
+      "admission_profile": "wasm_sandbox",
+      "variant_capabilities": [
+        "net.outbound:api.typesafe.ai:443",
+        "fs.roots",
+        "fs.private"
+      ]
+    },
+    {
+      "variant_id": "linux-arm64-wasm",
+      "platform": "linux",
+      "arch": "arm64",
+      "topology": "full_identity_host",
+      "execution_runtime": "wasm_component",
+      "admission_profile": "wasm_sandbox",
+      "variant_capabilities": [
+        "net.outbound:api.typesafe.ai:443",
+        "fs.roots",
+        "fs.private"
+      ]
+    },
+    {
+      "variant_id": "macos-arm64-wasm",
+      "platform": "macos",
+      "arch": "arm64",
+      "topology": "full_identity_host",
+      "execution_runtime": "wasm_component",
+      "admission_profile": "wasm_sandbox",
+      "variant_capabilities": [
+        "net.outbound:api.typesafe.ai:443",
+        "fs.roots",
+        "fs.private"
+      ]
+    },
+    {
+      "variant_id": "windows-x86_64-wasm",
+      "platform": "windows",
+      "arch": "x86_64",
+      "topology": "full_identity_host",
+      "execution_runtime": "wasm_component",
+      "admission_profile": "wasm_sandbox",
+      "variant_capabilities": [
+        "net.outbound:api.typesafe.ai:443",
+        "fs.roots",
+        "fs.private"
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "key": "api_key",
+      "type": "secret",
+      "title": "Jev API key",
+      "description": "the auth profile holding TypeSafe's Jev key (Bearer, host api.typesafe.ai:443)",
+      "required": true
+    },
+    {
+      "key": "model",
+      "type": "string",
+      "title": "Jev model",
+      "description": "the model id sent with every request (default jev-1.13.0)"
+    }
+  ]
+}

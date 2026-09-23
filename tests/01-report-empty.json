@@ -1,0 +1,11 @@
+{
+  "name": "report empty",
+  "operation": "report",
+  "arguments": {},
+  "expect": {
+    "status": "succeeded",
+    "result_contains": [
+      "\"scans\":[]"
+    ]
+  }
+}

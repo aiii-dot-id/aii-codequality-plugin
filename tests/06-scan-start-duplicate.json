@@ -1,0 +1,16 @@
+{
+  "name": "scan start duplicate",
+  "operation": "scan",
+  "arguments": {
+    "action": "start",
+    "root": "src",
+    "scan_id": "fixture"
+  },
+  "expect": {
+    "status": "failed",
+    "reason_code": "SCAN_EXISTS"
+  },
+  "settings": {
+    "api_key": "jev"
+  }
+}

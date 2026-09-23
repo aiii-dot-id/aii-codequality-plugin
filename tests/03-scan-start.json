@@ -1,0 +1,19 @@
+{
+  "name": "scan start",
+  "operation": "scan",
+  "arguments": {
+    "action": "start",
+    "root": "src",
+    "scan_id": "fixture"
+  },
+  "expect": {
+    "status": "succeeded",
+    "result_contains": [
+      "\"scan_id\":\"fixture\"",
+      "\"status\":\"running\""
+    ]
+  },
+  "settings": {
+    "api_key": "jev"
+  }
+}

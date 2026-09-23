@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "scan input",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "start",
+        "step"
+      ],
+      "description": "start a scan of a granted folder, or step an existing one."
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "start: the granted folder's name."
+    },
+    "path": {
+      "type": "string",
+      "maxLength": 512,
+      "description": "start: the directory inside the folder to scan (default: all of it)."
+    },
+    "exclude": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "description": "start: gitignore-style patterns to leave out, relative to path."
+    },
+    "languages": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 32
+      },
+      "description": "start: judge only these languages."
+    },
+    "include_tests": {
+      "type": "boolean",
+      "description": "start: judge test files too (default false)."
+    },
+    "max_files": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000,
+      "description": "start: stop after this many files (default 5000)."
+    },
+    "scan_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "step: the scan to advance; start: an optional name for the new scan (letters, digits, _ and -).",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "max_calls": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 6,
+      "description": "step: Jev calls this step may make (default 6)."
+    }
+  },
+  "required": [
+    "action"
+  ],
+  "additionalProperties": false
+}

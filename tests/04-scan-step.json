@@ -1,0 +1,18 @@
+{
+  "name": "scan step",
+  "operation": "scan",
+  "arguments": {
+    "action": "step",
+    "scan_id": "fixture"
+  },
+  "expect": {
+    "status": "succeeded",
+    "result_contains": [
+      "\"status\":\"done\"",
+      "\"secret_named\":1"
+    ]
+  },
+  "settings": {
+    "api_key": "jev"
+  }
+}
