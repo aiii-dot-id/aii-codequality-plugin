@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7
+
+- **Measured on a third codebase.** A third blind review, of 20 files from a further repository,
+  joins the first two: 96 Go files in all. EH-02 (a failure swallowed) falls to 59% and is now a
+  lead; ST-01 (a unit long enough to split) rises to 64% and is now a finding. The catalogue
+  holds each statement's counts, confirmed and reviewed, rather than a rounded share.
+
 ## 0.1.6
 
 - **`report`'s `path` reaches every folder.** The filter matched each glob against whole paths

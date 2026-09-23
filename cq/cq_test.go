@@ -604,6 +604,14 @@ func Bad(path string) string {
 	if lead["EH-01"] || !lead["DF-01"] || !lead["ST-03"] {
 		t.Fatalf("EH-01 is reported as a finding, DF-01 and unmeasured ST-03 as leads: %v", lead)
 	}
+	for id, p := range precision {
+		if p[1] <= 0 || p[0] < 0 || p[0] > p[1] || Lead(id) != (100*p[0] < ReportMin*p[1]) {
+			t.Fatalf("%s: %d of %d confirmed, lead %v", id, p[0], p[1], Lead(id))
+		}
+	}
+	if !Lead("EH-02") || Lead("ST-01") {
+		t.Fatal("at 23 of 39 EH-02 is a lead, at 9 of 14 ST-01 a finding (the 60% line, 96 files)")
+	}
 	sum := Summary(recs, 5)
 	fc, lc := sum["finding_counts"].(map[string]int), sum["lead_counts"].(map[string]int)
 	if fc["EH-01"] != 1 || fc["DF-01"] != 0 || lc["DF-01"] != 1 {

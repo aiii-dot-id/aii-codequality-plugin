@@ -13,10 +13,10 @@ an unchanged file is never asked twice.
 ## Findings, leads and locations
 
 A statement's findings are reported as **findings** when a blind review confirmed at least 60% of
-them, and as **leads** otherwise: a lead is a place to look, not a verdict. Measured on 76 Go files
-(204 findings): EH-01 88%, ID-GO-01 82%, RD-03 78%, ST-02 70% and EH-02 61% are findings; the
-other statements, and those not yet measured (the comment statements, other languages' own), are
-leads. Leads still count in the index, which was validated with them.
+them, and as **leads** otherwise: a lead is a place to look, not a verdict. Measured on 96 Go files
+from three repositories: EH-01 84%, RD-03 82%, ID-GO-01 78%, ST-02 75% and ST-01 64% are findings;
+the other statements (EH-02 is next, at 59%), and those not yet measured (the comment statements,
+other languages' own), are leads. Leads still count in the index, which was validated with them.
 
 Each code finding and lead names the **unit** that holds it — a function, type or declaration
 block, by its lines — when Jev locates it with confidence 0.7 or more; on reviewed findings those
