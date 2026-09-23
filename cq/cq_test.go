@@ -336,6 +336,37 @@ func TestScanJudgeFailureKeepsCursor(t *testing.T) {
 	}
 }
 
+// unansweredLocate answers every battery and never a location, as Jev did through the host for
+// the location calls of a repository's two largest files (2026-09-23).
+type unansweredLocate struct{ fakeJudge }
+
+func (f *unansweredLocate) Choose(state, qs map[string]any) (map[string]Choice, error) {
+	return nil, fmt.Errorf("%w: no answer within the 2000 ms this call allowed", ErrJudge)
+}
+
+// A file whose location call goes unanswered stays pending with its batteries kept, and the retry
+// step, planning only three calls, finishes it from the cache with the one call left to make.
+func TestAnUnansweredLocationIsRetriedFromTheCache(t *testing.T) {
+	tb := table(t)
+	root := t.TempDir()
+	write(t, root, "a.go", "package x\n\nfunc Good(a, b int) int {\n\treturn a + b\n}\n\nfunc Bad(path string) string {\n\tb, _ := os.ReadFile(path)\n\treturn string(b) + \"padding padding padding\"\n}\n")
+	fs := &OSFS{Root: root}
+	c := MemCache{}
+	s, _ := NewScan(fs, "cq_3", "src", "", nil, nil, false, 100, 131072)
+	slow := &unansweredLocate{fakeJudge{p: 0.9}}
+	if recs, err := s.Step(tb, fs, slow, c, 12, 50); err != nil || len(recs) != 0 || s.Status != "judge_unavailable" || len(s.Pending) != 1 {
+		t.Fatalf("err %v recs %d status %s pending %d", err, len(recs), s.Status, len(s.Pending))
+	}
+	retry := &fakeJudge{p: 0.9, where: "func Bad", conf: 0.9}
+	recs, err := s.Step(tb, fs, retry, c, 3, 50)
+	if err != nil || len(recs) != 1 || s.Status != "done" || retry.calls != 0 || retry.chosen != 1 {
+		t.Fatalf("err %v recs %d status %s: batteries asked again %d, locations %d", err, len(recs), s.Status, retry.calls, retry.chosen)
+	}
+	if !strings.Contains(recs[0].Findings[0].Where, "func Bad") {
+		t.Fatalf("located %+v", recs[0].Findings[0])
+	}
+}
+
 type refuseJudge struct{ fakeJudge }
 
 func (f *refuseJudge) Ask(state, qs map[string]any) (map[string]float64, error) {

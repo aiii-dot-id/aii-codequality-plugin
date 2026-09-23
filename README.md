@@ -41,8 +41,11 @@ skips:
 - test files, unless `include_tests` is set
 
 Every skip is counted by reason. A text Jev declines is recorded under `refused` and the scan
-moves on. The eight most recent
-scans are kept in the private directory.
+moves on. The eight most recent scans are kept in the private directory.
+
+A step makes up to twelve Jev calls of 2 s each. When a call goes unanswered, the scan stops as
+`judge_unavailable` with the file still pending, and the next step retries that file alone with
+three calls of 8 s each, going on from the answers already kept.
 
 ## Install
 

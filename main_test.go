@@ -16,8 +16,25 @@ import (
 // to watch: every call may take its whole timeout, and the calls a step makes, each at its
 // timeout, leave six seconds for reading files and saving state.
 func TestAStepFitsTheInvokeWall(t *testing.T) {
-	if worst := maxCalls * callTimeout; worst > 24000 {
-		t.Fatalf("%d calls at %d ms is %d ms, past the 24 s a step may spend on Jev", maxCalls, callTimeout, worst)
+	for calls := 1; calls <= maxCalls; calls++ {
+		if worst := calls * callMS(calls); worst > stepMS {
+			t.Fatalf("%d calls at %d ms is %d ms, past the %d ms a step may spend on Jev", calls, callMS(calls), worst, stepMS)
+		}
+	}
+	if callMS(maxCalls) != 2000 || callMS(retryCalls) != maxCallMS || callMS(1) != maxCallMS {
+		t.Fatalf("a step's calls get 2 s, a retry's and a lone text's 8 s: %d %d %d", callMS(maxCalls), callMS(retryCalls), callMS(1))
+	}
+}
+
+// A judge makes only the calls it was planned for; the next is refused as the judge's failure,
+// before anything is sent, so the step ends in time and the next one resumes from the cache.
+func TestAJudgeStopsAtTheCallsPlanned(t *testing.T) {
+	j := &hostJudge{handle: "h", model: "m", timeout: callMS(retryCalls), left: 0}
+	if _, err := j.Ask(map[string]any{"code": "x"}, map[string]any{}); !errors.Is(err, errCallsSpent) || !errors.Is(err, cq.ErrJudge) {
+		t.Fatalf("a call past the planned ones is refused as the judge's failure: %v", err)
+	}
+	if stepCalls(&cq.Scan{Status: "running"}) != maxCalls || stepCalls(&cq.Scan{Status: "judge_unavailable"}) != retryCalls {
+		t.Fatal("a step plans twelve calls, and three after one that found Jev unavailable")
 	}
 }
 

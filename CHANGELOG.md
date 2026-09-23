@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.8
+
+- **A slow call no longer stalls a scan.** Each Jev call had 2 s, and a file whose call went
+  unanswered was retried with the same 2 s. While Jev was slow for minutes, the location calls
+  of a repository's largest files went unanswered every step, and the scan could not move. A
+  step after an unanswered call now retries the pending file alone with three calls of 8 s,
+  going on from the answers already kept. A judge makes only the calls its step planned, and
+  each call's timeout is the step's 24 s shared among them, so `judge` on one text allows 8 s.
+- `last_error` says how long the unanswered call was allowed.
+
 ## 0.1.7
 
 - **Measured on a third codebase.** A third blind review, of 20 files from a further repository,

@@ -34,12 +34,18 @@ const (
 	jevModels  = "https://api.typesafe.ai/v1/models"
 	jevDefault = "jev-latest"
 	// A step must end inside the host's 30 s invoke wall, and a guest has no clock to watch it:
-	// the bound is calls × timeout, 24 s. Jev answers a call in well under a second; 2 s is three
-	// times the slowest call measured through the host, and twelve calls fit.
-	callTimeout = 2000 // ms per Jev call
-	maxCalls    = 12
-	readPage    = 512 << 10 // below the frame budget once base64-encoded
-	keepScans   = 8
+	// the bound is the calls it plans times each call's timeout, stepMS. A step plans maxCalls, so
+	// each call may take 2 s; Jev answers in about half a second. A file whose call went
+	// unanswered is retried by a step that plans retryCalls, 8 s each: through the host the
+	// location calls of the two largest files of a 20-file repository took over 2 s for minutes
+	// together while the same bytes sent directly took 0.6 s (2026-09-23), and a 2 s retry
+	// repeated the failure every step.
+	stepMS     = 24000
+	maxCallMS  = 8000
+	maxCalls   = 12
+	retryCalls = 3
+	readPage   = 512 << 10 // below the frame budget once base64-encoded
+	keepScans  = 8
 )
 
 var caps = []string{jevHost, "fs.sandbox", "fs.private"}
@@ -166,11 +172,23 @@ func readAll(root, file string, max int64) ([]byte, error) {
 	}
 }
 
-type hostJudge struct{ handle, model string }
+// hostJudge asks Jev through the host. It makes at most the calls it was planned for, each
+// allowed an equal share of the step's time.
+type hostJudge struct {
+	handle, model string
+	timeout, left int
+}
 
-func (j hostJudge) Model() string { return j.model }
+// errCallsSpent refuses a call past the ones planned. It is the judge's failure, so the scan keeps
+// the file pending and the next step goes on from the answers kept.
+var errCallsSpent = fmt.Errorf("%w: the calls this step planned are spent; the next step continues from the answers kept", cq.ErrJudge)
 
-func (j hostJudge) Ask(state, questions map[string]any) (map[string]float64, error) {
+// callMS is each call's timeout when a step plans calls of them.
+func callMS(calls int) int { return min(maxCallMS, stepMS/max(calls, 1)) }
+
+func (j *hostJudge) Model() string { return j.model }
+
+func (j *hostJudge) Ask(state, questions map[string]any) (map[string]float64, error) {
 	status, body, err := j.post(state, questions)
 	if err != nil {
 		return nil, err
@@ -178,7 +196,7 @@ func (j hostJudge) Ask(state, questions map[string]any) (map[string]float64, err
 	return cq.JudgeReply(status, body)
 }
 
-func (j hostJudge) Choose(state, questions map[string]any) (map[string]cq.Choice, error) {
+func (j *hostJudge) Choose(state, questions map[string]any) (map[string]cq.Choice, error) {
 	status, body, err := j.post(state, questions)
 	if err != nil {
 		return nil, err
@@ -186,8 +204,14 @@ func (j hostJudge) Choose(state, questions map[string]any) (map[string]cq.Choice
 	return cq.ChoiceReply(status, body)
 }
 
-// post makes one call to Jev and returns its status and body.
-func (j hostJudge) post(state, questions map[string]any) (int, []byte, error) {
+// post makes one call to Jev and returns its status and body. A call past the planned ones is not
+// made: its answer would land after the step's time, so it is left to the next step, which finds
+// the answers before it in the cache.
+func (j *hostJudge) post(state, questions map[string]any) (int, []byte, error) {
+	if j.left <= 0 {
+		return 0, nil, errCallsSpent
+	}
+	j.left--
 	body, err := cq.RequestBody(j.model, state, questions)
 	if err != nil {
 		return 0, nil, err
@@ -195,12 +219,12 @@ func (j hostJudge) post(state, questions map[string]any) (int, []byte, error) {
 	// A 4xx or 5xx comes back as the response AND an error (the SDK's contract): the status,
 	// not the error, says what happened. Only a denial, or no response at all, is the error's.
 	res, err := sdk.HTTP.Post(jevURL, &sdk.HTTPOptions{Body: string(body), ContentType: "application/json",
-		AuthProfile: j.handle, TimeoutMS: callTimeout})
+		AuthProfile: j.handle, TimeoutMS: j.timeout})
 	if _, denied := sdk.AsDenied(err); denied {
 		return 0, nil, err // a grant or profile is missing: not something a retry fixes
 	}
 	if err != nil && res.Status == 0 {
-		return 0, nil, fmt.Errorf("%w: %v", cq.ErrJudge, err)
+		return 0, nil, fmt.Errorf("%w: no answer within the %d ms this call allowed: %v", cq.ErrJudge, j.timeout, err)
 	}
 	return res.Status, responseBody(res), nil
 }
@@ -262,20 +286,30 @@ func (c *hostCache) Put(key string, a json.RawMessage) error {
 	return nil
 }
 
-func judgeFromSettings() (hostJudge, error) {
+// stepCalls is the Jev calls a step plans. A step after one that found Jev unavailable retries the
+// pending file alone, with longer calls: a call that went unanswered in 2 s is not asked again in 2 s.
+func stepCalls(s *cq.Scan) int {
+	if s.Status == "judge_unavailable" {
+		return retryCalls
+	}
+	return maxCalls
+}
+
+// judgeFromSettings is the judge for an invoke that plans calls Jev calls.
+func judgeFromSettings(calls int) (*hostJudge, error) {
 	vals, err := sdk.Settings.Load()
 	if err != nil {
-		return hostJudge{}, err
+		return nil, err
 	}
 	handle, _ := vals.Handle("api_key")
 	if handle == "" {
-		return hostJudge{}, sdk.Fail("JUDGE_UNCONFIGURED", "the api_key setting names no credential — choose the auth profile that holds Jev's key in the plugins view")
+		return nil, sdk.Fail("JUDGE_UNCONFIGURED", "the api_key setting names no credential — choose the auth profile that holds Jev's key in the plugins view")
 	}
 	model, _ := vals.String("model")
 	if model == "" {
 		model = jevDefault
 	}
-	return hostJudge{handle: handle, model: model}, nil
+	return &hostJudge{handle: handle, model: model, timeout: callMS(calls), left: calls}, nil
 }
 
 func failure(err error) (any, error) {
@@ -314,7 +348,7 @@ func named(fn func(sdk.Call) (any, error)) func(sdk.Call) (any, error) {
 // models answers the host's question for the model setting's choices:
 // Jev's own list, read with the operator's key.
 func models(c sdk.Call) (any, error) {
-	j, err := judgeFromSettings()
+	j, err := judgeFromSettings(0)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +386,7 @@ func judge(c sdk.Call) (any, error) {
 	if budget > maxCalls {
 		return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", fmt.Sprintf("these texts need up to %d Jev calls; one invoke makes at most %d — pass fewer or shorter texts", budget, maxCalls))
 	}
-	j, err := judgeFromSettings()
+	j, err := judgeFromSettings(budget)
 	if err != nil {
 		return nil, err
 	}
@@ -448,11 +482,12 @@ func scan(c sdk.Call) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		j, err := judgeFromSettings()
+		calls := stepCalls(s)
+		j, err := judgeFromSettings(calls)
 		if err != nil {
 			return nil, err
 		}
-		recs, err := s.Step(t, hostFS{s.Root}, j, &hostCache{}, maxCalls, 400)
+		recs, err := s.Step(t, hostFS{s.Root}, j, &hostCache{}, calls, 400)
 		if len(recs) > 0 {
 			var buf []byte
 			for _, r := range recs {
