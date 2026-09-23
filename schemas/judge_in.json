@@ -7,7 +7,7 @@
       "type": "array",
       "minItems": 1,
       "maxItems": 6,
-      "description": "The texts to judge. One invoke makes at most twelve Jev calls: one per 29 KB of code plus one for the comments.",
+      "description": "The texts to judge. One invoke makes at most twelve Jev calls: per 29 KB of code, one to judge it and one to locate its findings, plus one for the comments.",
       "items": {
         "type": "object",
         "properties": {

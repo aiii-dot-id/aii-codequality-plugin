@@ -7,8 +7,10 @@ package cq
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -151,12 +153,16 @@ func TestChunks(t *testing.T) {
 	}
 }
 
-// fakeJudge answers every question with p, or fails.
+// fakeJudge answers every Noul with p, or fails; it answers every Choice with the first option
+// holding where (or the first option) at confidence conf, counting those calls in chosen.
 type fakeJudge struct {
-	p     float64
-	fail  bool
-	calls int
-	seen  []map[string]any
+	p      float64
+	fail   bool
+	calls  int
+	seen   []map[string]any
+	where  string
+	conf   float64
+	chosen int
 }
 
 func (f *fakeJudge) Model() string { return "fake" }
@@ -169,6 +175,27 @@ func (f *fakeJudge) Ask(state, qs map[string]any) (map[string]float64, error) {
 	out := map[string]float64{}
 	for id := range qs {
 		out[id] = f.p
+	}
+	return out, nil
+}
+
+func (f *fakeJudge) Choose(state, qs map[string]any) (map[string]Choice, error) {
+	f.chosen++
+	out := map[string]Choice{}
+	for id, q := range qs {
+		var keys []string
+		for k := range q.(map[string]any)["criteria"].(map[string]any) {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		pick := keys[0]
+		for _, k := range keys {
+			if strings.Contains(k, f.where) {
+				pick = k
+				break
+			}
+		}
+		out[id] = Choice{Choice: pick, Confidence: f.conf}
 	}
 	return out, nil
 }
@@ -262,7 +289,7 @@ func TestScanWalksAndExcludes(t *testing.T) {
 	j := &fakeJudge{p: 0.1}
 	var all []Record
 	for i := 0; i < 20 && s.Status == "running"; i++ {
-		recs, err := s.Step(tb, fs, j, MemCache{}, 2, 50) // two calls: one file per step
+		recs, err := s.Step(tb, fs, j, MemCache{}, 3, 50) // three calls (code, location, comments): one file per step
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -434,5 +461,132 @@ func TestFaultsNameWhatAFindingMeans(t *testing.T) {
 	}
 	if f := FaultsOf(recs); len(f) != 2 {
 		t.Fatalf("FaultsOf names the records' findings: %v", f)
+	}
+}
+
+// A chunk splits into its top-level units, each named by its lines and first line: Go functions
+// and types, a Java class split at its methods, Python definitions; lines count from the chunk's
+// first line; short declarations merge; the count never passes MaxUnits.
+func TestUnitsSplitAChunkAtItsTopLevel(t *testing.T) {
+	goSrc := "package p\n\nimport \"fmt\"\n\ntype T struct {\n\tn int\n}\n\nfunc (t T) A() int {\n\treturn t.n\n}\n\nfunc B() {\n\tfmt.Println(1)\n}\n"
+	u := Units(goSrc, 1)
+	var keys []string
+	for _, x := range u {
+		keys = append(keys, x.Key)
+	}
+	want := []string{"lines 1-3: package p", "lines 5-7: type T struct {", "lines 9-11: func (t T) A() int {", "lines 13-15: func B() {"}
+	if strings.Join(keys, "|") != strings.Join(want, "|") {
+		t.Fatalf("go units %q", keys)
+	}
+	if !strings.Contains(u[2].Text, "return t.n") || u[2].First != 9 || u[2].Last != 11 {
+		t.Fatalf("a unit carries its text and lines: %+v", u[2])
+	}
+	java := "public class C {\n    private int n;\n\n    int a() {\n        return n;\n    }\n\n    void b() {\n        n++;\n    }\n}\n"
+	keys = nil
+	for _, x := range Units(java, 100) {
+		keys = append(keys, x.Key)
+	}
+	if len(keys) != 3 || !strings.HasPrefix(keys[1], "lines 103-105: int a()") || !strings.HasPrefix(keys[2], "lines 107-110: void b()") {
+		t.Fatalf("a class splits at its methods, lines from the chunk's first: %q", keys)
+	}
+	py := "import os\nimport sys\n\ndef f(x):\n    return x\n\nclass K:\n    def g(self):\n        pass\n"
+	keys = nil
+	for _, x := range Units(py, 1) {
+		keys = append(keys, x.Key)
+	}
+	if len(keys) != 3 || !strings.HasPrefix(keys[0], "lines 1-2: import os") || !strings.HasPrefix(keys[1], "lines 4-5: def f(x):") {
+		t.Fatalf("python units %q", keys)
+	}
+	var many strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&many, "func f%d() {\n\tx := %d\n\t_ = x\n}\n", i, i)
+	}
+	if n := len(Units(many.String(), 1)); n > MaxUnits || n < MaxUnits/2 {
+		t.Fatalf("%d units for 200 functions", n)
+	}
+	if u := Units("x = 1", 7); len(u) != 1 || u[0].Key != "lines 7-7: x = 1" {
+		t.Fatalf("one line is one unit: %+v", u)
+	}
+}
+
+// A finding is located to the unit Jev names when Jev is sure (WhereMin), in the same call for
+// every code finding of the chunk, from the cache on an unchanged text; unsure, it is left
+// unlocated; a chunk of one unit is not asked. Leads are marked by today's measurement, and the
+// summary counts findings and leads apart.
+func TestAFindingIsLocatedWhenJevIsSure(t *testing.T) {
+	tb := table(t)
+	src := `package x
+
+func Good(a, b int) int {
+	return a + b
+}
+
+func Bad(path string) string {
+	b, _ := os.ReadFile(path)
+	return string(b) + "padding padding padding"
+}
+`
+	j := &fakeJudge{p: 0.9, where: "func Bad", conf: 0.9}
+	c := MemCache{}
+	recs, err := JudgeText(tb, j, c, "x.go", "go", src)
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("%v %+v", err, recs)
+	}
+	r := recs[0]
+	if j.chosen != 1 || r.Calls != 2 {
+		t.Fatalf("one location call for the chunk: chosen %d, calls %d", j.chosen, r.Calls)
+	}
+	for _, f := range r.Findings {
+		if !strings.Contains(f.Where, "func Bad") || f.WhereConfidence != 0.9 {
+			t.Fatalf("finding %s located at %q (%v)", f.ID, f.Where, f.WhereConfidence)
+		}
+	}
+	again, _ := JudgeText(tb, j, c, "x.go", "go", src)
+	if j.chosen != 1 || again[0].Calls != 0 || again[0].Cached != 2 || again[0].Findings[0].Where == "" {
+		t.Fatalf("an unchanged text is located from the cache: chosen %d, %+v", j.chosen, again[0])
+	}
+	unsure := &fakeJudge{p: 0.9, where: "func Bad", conf: 0.5}
+	recs, _ = JudgeText(tb, unsure, MemCache{}, "x.go", "go", src)
+	for _, f := range recs[0].Findings {
+		if f.Where != "" {
+			t.Fatalf("below WhereMin nothing is located: %+v", f)
+		}
+	}
+	one := &fakeJudge{p: 0.9, conf: 0.9}
+	JudgeText(tb, one, MemCache{}, "y.go", "go", "func Only(a, b int) int {\n\treturn a + b + len(\"text long enough to be judged at all\")\n}\n")
+	if one.chosen != 0 {
+		t.Fatal("a chunk of one unit is not asked where")
+	}
+	MarkLeads(recs)
+	lead := map[string]bool{}
+	for _, f := range recs[0].Findings {
+		lead[f.ID] = f.Lead
+	}
+	if lead["EH-01"] || !lead["DF-01"] || !lead["ST-03"] {
+		t.Fatalf("EH-01 is reported as a finding, DF-01 and unmeasured ST-03 as leads: %v", lead)
+	}
+	sum := Summary(recs, 5)
+	fc, lc := sum["finding_counts"].(map[string]int), sum["lead_counts"].(map[string]int)
+	if fc["EH-01"] != 1 || fc["DF-01"] != 0 || lc["DF-01"] != 1 {
+		t.Fatalf("the summary counts findings and leads apart: %v %v", fc, lc)
+	}
+}
+
+// A Choice answer is read as its chosen option and confidence, by the same status rules as a
+// Noul battery; an answer without both is a judge failure, never a location.
+func TestChoiceReplyReadsTheChoiceAndItsConfidence(t *testing.T) {
+	body := []byte(`{"model":"jev-1.13.0","answers":{"EH-01":{"type":"choice","choice":"lines 9-11: func Bad() {","confidence":0.87,"probabilities":{"lines 9-11: func Bad() {":0.9,"lines 1-3: package x":0.1}}}}`)
+	got, err := ChoiceReply(200, body)
+	if err != nil || got["EH-01"].Choice != "lines 9-11: func Bad() {" || got["EH-01"].Confidence != 0.87 {
+		t.Fatalf("%v %+v", err, got)
+	}
+	if _, err := ChoiceReply(200, []byte(`{"answers":{"EH-01":{"type":"choice","choice":"x"}}}`)); !errors.Is(err, ErrJudge) {
+		t.Fatalf("an answer without confidence is a judge failure: %v", err)
+	}
+	if _, err := ChoiceReply(503, nil); !errors.Is(err, ErrJudge) {
+		t.Fatalf("503 is Jev unavailable: %v", err)
+	}
+	if _, err := ChoiceReply(401, []byte(`{"error":"key"}`)); !errors.Is(err, ErrKey) {
+		t.Fatalf("401 is the key refused: %v", err)
 	}
 }

@@ -316,9 +316,9 @@ func (s *Scan) file(t *Table, fs FS, j Judge, c Cache, e Entry, file string, ign
 	return recs, used, nil
 }
 
-// EstimatedCalls bounds the judge calls a file of size bytes can need: one code call per chunk
-// plus the comment call.
-func EstimatedCalls(size int64) int { return int(size/ChunkBytes) + 2 }
+// EstimatedCalls bounds the judge calls a file of size bytes can need: per chunk, the code call
+// and the location call, plus the comment call.
+func EstimatedCalls(size int64) int { return 2*(int(size/ChunkBytes)+1) + 1 }
 
 func minified(lang string, raw []byte) bool {
 	switch lang {

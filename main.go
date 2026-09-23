@@ -48,7 +48,7 @@ func init() {
 	p := sdk.New("id.aiii.codequality")
 
 	p.Describe("judge", sdk.Descriptor{
-		Summary:        "Judge the quality of source code passed in, with Jev: findings, dimension scores, an index and a band",
+		Summary:        "Judge the quality of source code passed in, with Jev: findings and leads, located where Jev is sure, dimension scores, an index and a band",
 		Input:          "schemas/judge_in.json",
 		Output:         "schemas/judge_out.json",
 		Effects:        sdk.EffectsWriteExternal,
@@ -86,7 +86,7 @@ func init() {
 	p.Handle("models", named(models))
 
 	p.Describe("report", sdk.Descriptor{
-		Summary:        "Report a scan: its summary with the worst files, or its findings page by page; no scan_id lists the scans",
+		Summary:        "Report a scan: its summary with the worst files, or its findings and leads page by page, each located where Jev is sure; no scan_id lists the scans",
 		Input:          "schemas/report_in.json",
 		Output:         "schemas/report_out.json",
 		Effects:        sdk.EffectsReadInternal,
@@ -171,21 +171,38 @@ type hostJudge struct{ handle, model string }
 func (j hostJudge) Model() string { return j.model }
 
 func (j hostJudge) Ask(state, questions map[string]any) (map[string]float64, error) {
-	body, err := cq.RequestBody(j.model, state, questions)
+	status, body, err := j.post(state, questions)
 	if err != nil {
 		return nil, err
+	}
+	return cq.JudgeReply(status, body)
+}
+
+func (j hostJudge) Choose(state, questions map[string]any) (map[string]cq.Choice, error) {
+	status, body, err := j.post(state, questions)
+	if err != nil {
+		return nil, err
+	}
+	return cq.ChoiceReply(status, body)
+}
+
+// post makes one call to Jev and returns its status and body.
+func (j hostJudge) post(state, questions map[string]any) (int, []byte, error) {
+	body, err := cq.RequestBody(j.model, state, questions)
+	if err != nil {
+		return 0, nil, err
 	}
 	// A 4xx or 5xx comes back as the response AND an error (the SDK's contract): the status,
 	// not the error, says what happened. Only a denial, or no response at all, is the error's.
 	res, err := sdk.HTTP.Post(jevURL, &sdk.HTTPOptions{Body: string(body), ContentType: "application/json",
 		AuthProfile: j.handle, TimeoutMS: callTimeout})
 	if _, denied := sdk.AsDenied(err); denied {
-		return nil, err // a grant or profile is missing: not something a retry fixes
+		return 0, nil, err // a grant or profile is missing: not something a retry fixes
 	}
 	if err != nil && res.Status == 0 {
-		return nil, fmt.Errorf("%w: %v", cq.ErrJudge, err)
+		return 0, nil, fmt.Errorf("%w: %v", cq.ErrJudge, err)
 	}
-	return cq.JudgeReply(res.Status, responseBody(res))
+	return res.Status, responseBody(res), nil
 }
 
 // responseBody is a response's body as bytes: the host hands JSON over as JSON and anything else as a
@@ -199,25 +216,26 @@ func responseBody(res sdk.HTTPResult) []byte {
 	return raw
 }
 
-// hostCache keeps answers in 16 append-only shard files of the private directory.
+// hostCache keeps answers in 16 append-only shard files of the private directory, one JSON line
+// {"k": key, "a": answer} per entry.
 type hostCache struct {
-	shards map[string]map[string]map[string]float64
+	shards map[string]map[string]json.RawMessage
 }
 
-func (c *hostCache) shard(key string) (string, map[string]map[string]float64) {
+func (c *hostCache) shard(key string) (string, map[string]json.RawMessage) {
 	name := "cache/" + key[:1] + ".jsonl"
 	if c.shards == nil {
-		c.shards = map[string]map[string]map[string]float64{}
+		c.shards = map[string]map[string]json.RawMessage{}
 	}
 	if m, ok := c.shards[name]; ok {
 		return name, m
 	}
-	m := map[string]map[string]float64{}
+	m := map[string]json.RawMessage{}
 	if b, err := readAll(sdk.PrivateRoot, name, 16<<20); err == nil {
 		for _, ln := range strings.Split(string(b), "\n") {
 			var e struct {
-				K string             `json:"k"`
-				A map[string]float64 `json:"a"`
+				K string          `json:"k"`
+				A json.RawMessage `json:"a"`
 			}
 			if json.Unmarshal([]byte(ln), &e) == nil && e.K != "" {
 				m[e.K] = e.A
@@ -228,13 +246,13 @@ func (c *hostCache) shard(key string) (string, map[string]map[string]float64) {
 	return name, m
 }
 
-func (c *hostCache) Get(key string) (map[string]float64, bool) {
+func (c *hostCache) Get(key string) (json.RawMessage, bool) {
 	_, m := c.shard(key)
 	a, ok := m[key]
 	return a, ok
 }
 
-func (c *hostCache) Put(key string, a map[string]float64) error {
+func (c *hostCache) Put(key string, a json.RawMessage) error {
 	name, m := c.shard(key)
 	line, _ := json.Marshal(map[string]any{"k": key, "a": a})
 	if err := sdk.Files.Append(sdk.PrivateRoot, name, append(line, '\n')); err != nil {
@@ -360,6 +378,7 @@ func judge(c sdk.Call) (any, error) {
 		}
 		recs = append(recs, rs...)
 	}
+	cq.MarkLeads(recs)
 	raw, err := recordsJSON(recs)
 	if err != nil {
 		return nil, err

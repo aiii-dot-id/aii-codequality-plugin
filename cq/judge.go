@@ -10,19 +10,29 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 )
 
-// Judge asks one battery of Noul questions about one state and returns P(true) per question.
+// Judge asks questions about one state: Ask a battery of Nouls, returning P(true) per question;
+// Choose a set of Choices, returning the option chosen and Jev's confidence in it per question.
 type Judge interface {
 	Ask(state map[string]any, questions map[string]any) (map[string]float64, error)
+	Choose(state map[string]any, questions map[string]any) (map[string]Choice, error)
 	Model() string
 }
 
-// Cache holds Jev's answers by content key, so an unchanged text is never asked twice.
+// Choice is one Choice answer: the option chosen and Jev's confidence in it.
+type Choice struct {
+	Choice     string  `json:"choice"`
+	Confidence float64 `json:"confidence"`
+}
+
+// Cache holds Jev's answers by content key, so an unchanged text is never asked twice. An entry
+// is the answer as JSON: a Noul battery's probabilities, or a location call's choices.
 type Cache interface {
-	Get(key string) (map[string]float64, bool)
-	Put(key string, answers map[string]float64) error
+	Get(key string) (json.RawMessage, bool)
+	Put(key string, answers json.RawMessage) error
 }
 
 // ErrJudge wraps a transient judge failure: the call did not produce answers; retrying later may.
@@ -38,17 +48,33 @@ var ErrRefused = errors.New("judge refused this text")
 // a key that works. A 403 page from Jev, and any other 4xx, is Jev declining this text:
 // ErrRefused, and the scan records the file and moves on. Status 0 is no answer at all.
 func JudgeReply(status int, body []byte) (map[string]float64, error) {
+	if err := replyError(status, body); err != nil {
+		return nil, err
+	}
+	return ParseAnswers(body)
+}
+
+// ChoiceReply reads Jev's answer to a call of Choices, its status read as JudgeReply reads it.
+func ChoiceReply(status int, body []byte) (map[string]Choice, error) {
+	if err := replyError(status, body); err != nil {
+		return nil, err
+	}
+	return ParseChoices(body)
+}
+
+// replyError is what a call's status says, nil for 200.
+func replyError(status int, body []byte) error {
 	switch {
 	case status == 200:
-		return ParseAnswers(body)
+		return nil
 	case status == 0 || status == 429 || status >= 500:
-		return nil, fmt.Errorf("%w: Jev answered %d", ErrJudge, status)
+		return fmt.Errorf("%w: Jev answered %d", ErrJudge, status)
 	case status == 401 || status == 403 && json.Valid(body):
-		return nil, fmt.Errorf("%w (%d): paste a key that works on the plugin's card", ErrKey, status)
+		return fmt.Errorf("%w (%d): paste a key that works on the plugin's card", ErrKey, status)
 	case status == 403:
-		return nil, fmt.Errorf("%w: Jev answered 403 with a page, not JSON", ErrRefused)
+		return fmt.Errorf("%w: Jev answered 403 with a page, not JSON", ErrRefused)
 	}
-	return nil, fmt.Errorf("%w: Jev answered %d: %.200s", ErrRefused, status, body)
+	return fmt.Errorf("%w: Jev answered %d: %.200s", ErrRefused, status, body)
 }
 
 // ErrKey wraps Jev refusing the key: no retry helps until the operator pastes one that works.
@@ -63,14 +89,25 @@ const (
 	MinBlankedBytes = 64
 	// ChunkBytes: the state budget per call, 12,000 tokens at the measured 2.42 bytes per token.
 	ChunkBytes = 29000
+	// WhereMin is the confidence at which a finding's location is reported. On blind-reviewed
+	// findings, locations at or above it held the reviewer's line 49 times in 56; below it, the
+	// wrong unit was chosen as often as the right one. A location below it is not reported.
+	WhereMin = 0.7
 )
 
 // Finding is one fault Jev judged present.
+// Where names the unit of the chunk that holds it, by its lines and first line, when Jev located
+// it with confidence at least WhereMin. Lead marks a finding of a statement whose findings a
+// blind review did not confirm often enough to report as findings (Lead, catalogue.go); it is
+// set when records are reported, from the catalogue, never stored.
 type Finding struct {
-	ID        string  `json:"id"`
-	P         float64 `json:"p"`
-	Severity  string  `json:"severity"`
-	Dimension string  `json:"dimension,omitempty"`
+	ID              string  `json:"id"`
+	P               float64 `json:"p"`
+	Severity        string  `json:"severity"`
+	Dimension       string  `json:"dimension,omitempty"`
+	Where           string  `json:"where,omitempty"`
+	WhereConfidence float64 `json:"where_confidence,omitempty"`
+	Lead            bool    `json:"lead,omitempty"`
 }
 
 // Record is the judgment of one chunk.
@@ -212,10 +249,9 @@ func JudgeText(t *Table, j Judge, c Cache, ref, lang, text string) ([]Record, er
 	model := j.Model()
 	ask := func(field, body string, items []Item, call string) (map[string]float64, bool, error) {
 		key := CacheKey(body, lang, model, call)
-		if c != nil {
-			if a, ok := c.Get(key); ok {
-				return a, true, nil
-			}
+		var a map[string]float64
+		if hit, err := cached(c, key, &a); err != nil || hit {
+			return a, hit, err
 		}
 		a, err := j.Ask(map[string]any{"language": lang, field: body}, Questions(items, field))
 		if err != nil {
@@ -226,12 +262,7 @@ func JudgeText(t *Table, j Judge, c Cache, ref, lang, text string) ([]Record, er
 				return nil, false, fmt.Errorf("%w: no answer for %s", ErrJudge, it.ID)
 			}
 		}
-		if c != nil {
-			if err := c.Put(key, a); err != nil {
-				return nil, false, fmt.Errorf("cache: %w", err)
-			}
-		}
-		return a, false, nil
+		return a, false, keep(c, key, a)
 	}
 	var chunks []Chunk
 	if lang == "markdown" {
@@ -285,6 +316,12 @@ func JudgeText(t *Table, j Judge, c Cache, ref, lang, text string) ([]Record, er
 		}
 		r.Findings, r.Abstained, r.Dimensions, r.Index, r.Uncertain = Score(lang, r.Answers, i == 0 && docsAsked)
 		r.Band = Band(r.Index)
+		used, hit, err := locate(j, c, lang, model, ch, r.Findings)
+		if err != nil {
+			return recs, err
+		}
+		r.Calls += used
+		r.Cached += hit
 		for k, v := range r.Answers {
 			r.Answers[k] = math.Round(v*1000) / 1000
 		}
@@ -293,11 +330,121 @@ func JudgeText(t *Table, j Judge, c Cache, ref, lang, text string) ([]Record, er
 	return recs, nil
 }
 
+// locate asks, in one call, which unit of the chunk holds each of its code findings, and sets a
+// finding's Where when Jev's confidence in the unit is at least WhereMin. A chunk that is one unit
+// has nothing to choose between and is not asked. It returns the calls made and the cache hits.
+func locate(j Judge, c Cache, lang, model string, ch Chunk, findings []Finding) (calls, hits int, err error) {
+	code := map[string]string{}
+	for _, it := range CodeItems(lang) {
+		code[it.ID] = it.Fault
+	}
+	var ids []string
+	for _, f := range findings {
+		if code[f.ID] != "" {
+			ids = append(ids, f.ID)
+		}
+	}
+	units := Units(ch.Text, ch.FirstLine)
+	if len(ids) == 0 || len(units) < 2 {
+		return 0, 0, nil
+	}
+	sort.Strings(ids)
+	state := map[string]string{}
+	options := map[string]any{}
+	for _, u := range units {
+		state[u.Key] = u.Text
+		options[u.Key] = "the unit " + u.Key
+	}
+	questions := map[string]any{}
+	for _, id := range ids {
+		questions[id] = map[string]any{"type": "choice", "criteria": options,
+			"instructions": "In `units`: which unit contains the place where " + code[id] + "?"}
+	}
+	key := CacheKey(ch.Text+"\x00"+strings.Join(ids, ","), lang, model, "locate")
+	var got map[string]Choice
+	hit, err := cached(c, key, &got)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !hit {
+		if got, err = j.Choose(map[string]any{"language": lang, "units": state}, questions); err != nil {
+			return 0, 0, err
+		}
+		if err := keep(c, key, got); err != nil {
+			return 0, 0, err
+		}
+	}
+	for k := range findings {
+		a, ok := got[findings[k].ID]
+		if ok && a.Confidence >= WhereMin && state[a.Choice] != "" {
+			findings[k].Where = a.Choice
+			findings[k].WhereConfidence = math.Round(a.Confidence*1000) / 1000
+		}
+	}
+	calls, hits = count(hit)
+	return calls, hits, nil
+}
+
+// cached reads the entry under key into v; false when there is none.
+func cached(c Cache, key string, v any) (bool, error) {
+	if c == nil {
+		return false, nil
+	}
+	raw, ok := c.Get(key)
+	if !ok {
+		return false, nil
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		return false, fmt.Errorf("cache: entry %s: %w", key[:12], err)
+	}
+	return true, nil
+}
+
+// keep stores v under key.
+func keep(c Cache, key string, v any) error {
+	if c == nil {
+		return nil
+	}
+	raw, err := json.Marshal(v)
+	if err == nil {
+		err = c.Put(key, raw)
+	}
+	if err != nil {
+		return fmt.Errorf("cache: %w", err)
+	}
+	return nil
+}
+
 func count(hit bool) (calls, cached int) {
 	if hit {
 		return 0, 1
 	}
 	return 1, 0
+}
+
+// ParseChoices reads a Jev /v1/systemone response body into the chosen option and its confidence
+// per Choice.
+func ParseChoices(body []byte) (map[string]Choice, error) {
+	var r struct {
+		Answers map[string]struct {
+			Choice     *string  `json:"choice"`
+			Confidence *float64 `json:"confidence"`
+		} `json:"answers"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("%w: response is not JSON: %v", ErrJudge, err)
+	}
+	if len(r.Answers) == 0 {
+		return nil, fmt.Errorf("%w: response has no answers", ErrJudge)
+	}
+	out := make(map[string]Choice, len(r.Answers))
+	for id, a := range r.Answers {
+		if a.Choice == nil || a.Confidence == nil || *a.Confidence < 0 || *a.Confidence > 1 || math.IsNaN(*a.Confidence) {
+			return nil, fmt.Errorf("%w: answer %s has no choice and confidence", ErrJudge, id)
+		}
+		out[id] = Choice{Choice: *a.Choice, Confidence: *a.Confidence}
+	}
+	return out, nil
 }
 
 // ParseAnswers reads a Jev /v1/systemone response body into P(true) per Noul.

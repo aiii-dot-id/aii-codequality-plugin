@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.5
+
+- **Findings and leads.** A blind review of 76 Go files measured how often each statement's
+  findings are real. Statements confirmed at least 60% of the time (EH-01, ID-GO-01, RD-03,
+  ST-02, EH-02) report findings; the rest, and unmeasured statements, report leads, marked
+  `lead`. The index is unchanged. `report`'s summary counts findings and leads apart.
+- **Each finding says where.** One call per chunk with findings asks Jev which unit — a function,
+  type or declaration block, by its lines — holds each code finding. The unit is reported when
+  Jev's confidence is 0.7 or more (`where`, `where_confidence`); on reviewed findings such
+  locations were right 49 times in 56. Below that, nothing is guessed.
+- **The cache holds any answer** as JSON; caches written by earlier releases read unchanged.
+
 ## 0.1.4
 
 - **`report`'s findings and `judge`'s results reach the caller.** Both returned records as Go

@@ -10,6 +10,19 @@ medium / high) from its dimension. The index is the mean of the dimensions prese
 band is clean ≥ 90, minor ≥ 75, moderate ≥ 60, severe below. Answers are cached by content, so
 an unchanged file is never asked twice.
 
+## Findings, leads and locations
+
+A statement's findings are reported as **findings** when a blind review confirmed at least 60% of
+them, and as **leads** otherwise: a lead is a place to look, not a verdict. Measured on 76 Go files
+(204 findings): EH-01 88%, ID-GO-01 82%, RD-03 78%, ST-02 70% and EH-02 61% are findings; the
+other statements, and those not yet measured (the comment statements, other languages' own), are
+leads. Leads still count in the index, which was validated with them.
+
+Each code finding and lead names the **unit** that holds it — a function, type or declaration
+block, by its lines — when Jev locates it with confidence 0.7 or more; on reviewed findings those
+locations held the reviewer's line 49 times in 56. Below 0.7 it is left unlocated rather than
+guessed. Locating costs one more call per chunk with findings, and is cached like every answer.
+
 ## Operations
 
 | Operation | Effect | Does |
@@ -17,7 +30,7 @@ an unchanged file is never asked twice.
 | `judge` | write.external | judges up to twelve Jev calls' worth of texts passed in (`items: [{ref, text, language?}]`) |
 | `scan` | write.external | `start` a walk of a folder in the identity's sandbox, then `step` it until `done`: each step judges files until twelve Jev calls are used |
 | `models` | read.external | Jev's model list, the choices the card offers for the `model` setting |
-| `report` | read.internal | a scan's summary (index, bands, per-language means, finding counts, worst files) or its findings page by page, each with the fault statements its findings name; no `scan_id` lists the scans |
+| `report` | read.internal | a scan's summary (index, bands, per-language means, finding and lead counts, worst files) or its findings and leads page by page, with the fault statements they name; no `scan_id` lists the scans |
 
 A scan skips what the language table, the folder's `.gitignore` and `.gitattributes`
 (vendored / generated / documentation), and the caller's `exclude` globs leave out. It also

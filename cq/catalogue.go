@@ -102,6 +102,34 @@ func CodeItems(lang string) []Item {
 	return append(append([]Item(nil), general...), addenda[lang]...)
 }
 
+// precision is the share of a statement's findings a blind review confirmed, in percent, over 76
+// Go files from two repositories (204 findings of the plugin wording). A statement with too few
+// findings to measure, or none measured (the comment statements, the other languages' own), is
+// absent.
+var precision = map[string]int{
+	"EH-01": 88, "ID-GO-01": 82, "RD-03": 78, "ST-02": 70, "EH-02": 61, "ST-01": 58,
+	"EH-03": 45, "DF-02": 40, "EH-04": 40, "DF-04": 38, "DF-03": 25, "RD-01": 25,
+	"ID-GO-03": 17, "RD-04": 13, "DF-01": 8, "ST-04": 7,
+}
+
+// ReportMin is the measured precision, in percent, at which a statement's findings are reported
+// as findings; below it, or unmeasured, they are leads: kept, scored into the index as validated,
+// and marked for the reader to confirm.
+const ReportMin = 60
+
+// Lead reports whether findings of statement id are leads.
+func Lead(id string) bool { return precision[id] < ReportMin }
+
+// MarkLeads marks each finding of the records that is a lead. Records are marked when reported,
+// so a scan judged before a statement was measured is reported by today's measurement.
+func MarkLeads(recs []Record) {
+	for i := range recs {
+		for k := range recs[i].Findings {
+			recs[i].Findings[k].Lead = Lead(recs[i].Findings[k].ID)
+		}
+	}
+}
+
 // Faults names each finding id with the statement it was asked as, so a report says what a
 // finding means and not only its code. An id the catalogue does not hold is left out.
 func Faults(ids []string) map[string]string {

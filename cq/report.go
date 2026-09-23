@@ -45,7 +45,7 @@ func Summary(recs []Record, worst int) map[string]any {
 	bands := map[string]int{}
 	type agg struct{ lines, weighted, chunks int }
 	byLang := map[string]*agg{}
-	findings := map[string]int{}
+	findings, leads := map[string]int{}, map[string]int{}
 	all := agg{}
 	var judged []Record
 	for _, r := range recs {
@@ -66,7 +66,11 @@ func Summary(recs []Record, worst int) map[string]any {
 			x.chunks++
 		}
 		for _, f := range r.Findings {
-			findings[f.ID]++
+			if Lead(f.ID) {
+				leads[f.ID]++
+			} else {
+				findings[f.ID]++
+			}
 		}
 	}
 	mean := func(a *agg) any {
@@ -85,18 +89,29 @@ func Summary(recs []Record, worst int) map[string]any {
 	}
 	w := make([]any, 0, len(judged))
 	for _, r := range judged {
-		ids := make([]string, 0, len(r.Findings))
+		fs, ls := []any{}, []any{}
 		for _, f := range r.Findings {
-			ids = append(ids, f.ID)
+			item := map[string]any{"id": f.ID}
+			if f.Where != "" {
+				item["where"] = f.Where
+			}
+			if Lead(f.ID) {
+				ls = append(ls, item)
+			} else {
+				fs = append(fs, item)
+			}
 		}
-		w = append(w, map[string]any{"ref": r.Ref, "chunk": r.Chunk, "index": r.Index, "band": r.Band, "findings": ids})
+		w = append(w, map[string]any{"ref": r.Ref, "chunk": r.Chunk, "index": r.Index, "band": r.Band, "findings": fs, "leads": ls})
 	}
-	ids := make([]string, 0, len(findings))
+	ids := make([]string, 0, len(findings)+len(leads))
 	for id := range findings {
 		ids = append(ids, id)
 	}
+	for id := range leads {
+		ids = append(ids, id)
+	}
 	return map[string]any{"chunks_judged": all.chunks, "lines": all.lines, "index": mean(&all), "bands": bands,
-		"languages": langs, "finding_counts": findings, "faults": Faults(ids), "worst": w}
+		"languages": langs, "finding_counts": findings, "lead_counts": leads, "faults": Faults(ids), "worst": w}
 }
 
 var severityRank = map[string]int{"low": 0, "medium": 1, "high": 2}
@@ -121,6 +136,7 @@ func Page(recs []Record, offset, pageBytes int, minSeverity, language string) ([
 			continue
 		}
 		r.Findings = kept
+		MarkLeads([]Record{r})
 		r.Answers = nil
 		b, _ := json.Marshal(r)
 		if size+len(b) > pageBytes && len(out) > 0 {

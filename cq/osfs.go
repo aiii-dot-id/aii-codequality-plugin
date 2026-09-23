@@ -6,6 +6,7 @@
 package cq
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func (f *OSFS) Read(file string, max int64) ([]byte, error) {
 }
 
 // MemCache is an in-memory Cache.
-type MemCache map[string]map[string]float64
+type MemCache map[string]json.RawMessage
 
-func (m MemCache) Get(k string) (map[string]float64, bool)  { a, ok := m[k]; return a, ok }
-func (m MemCache) Put(k string, a map[string]float64) error { m[k] = a; return nil }
+func (m MemCache) Get(k string) (json.RawMessage, bool)  { a, ok := m[k]; return a, ok }
+func (m MemCache) Put(k string, a json.RawMessage) error { m[k] = a; return nil }
