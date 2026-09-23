@@ -26,12 +26,16 @@ import (
 )
 
 const (
-	jevHost     = "net.outbound:api.typesafe.ai:443"
-	jevURL      = "https://api.typesafe.ai/v1/systemone"
-	jevModels   = "https://api.typesafe.ai/v1/models"
-	jevDefault  = "jev-latest"
-	callTimeout = 4000 // ms per Jev call; six calls fit the 30 s invoke wall
-	maxCalls    = 6
+	jevHost    = "net.outbound:api.typesafe.ai:443"
+	jevURL     = "https://api.typesafe.ai/v1/systemone"
+	jevModels  = "https://api.typesafe.ai/v1/models"
+	jevDefault = "jev-latest"
+	// A step must end inside the host's 30 s invoke wall, and a guest has no clock to watch it:
+	// the bound is calls × timeout, 24 s. Jev answered 848 direct calls at a median 0.23 s, p99
+	// 0.37 s, max 0.50 s (the validation grid), and a live identity's calls through the host took
+	// at most about 0.67 s; 2 s is three times that, and twelve calls fit.
+	callTimeout = 2000 // ms per Jev call
+	maxCalls    = 12
 	readPage    = 512 << 10 // below the frame budget once base64-encoded
 	keepScans   = 8
 )
@@ -52,10 +56,10 @@ func init() {
 		Keywords:       []string{"code quality", "review", "judge", "maintainability", "findings"},
 		Examples:       []string{`{"items":[{"ref":"store.go","text":"package store\n..."}]}`},
 	})
-	p.Handle("judge", judge)
+	p.Handle("judge", named(judge))
 
 	p.Describe("scan", sdk.Descriptor{
-		Summary:        "Scan a folder's source files with Jev, a few per call: start, then step until done",
+		Summary:        "Scan a folder's source files with Jev, up to twelve Jev calls per step: start, then step until done",
 		Input:          "schemas/scan_in.json",
 		Output:         "schemas/scan_out.json",
 		Effects:        sdk.EffectsWriteExternal,
@@ -65,7 +69,7 @@ func init() {
 		Keywords:       []string{"code quality", "scan", "repository", "folder", "quality report"},
 		Examples:       []string{`{"action":"start","path":"projects/aii-os/internal"}`, `{"action":"step","scan_id":"cq_1758500000000"}`},
 	})
-	p.Handle("scan", scan)
+	p.Handle("scan", named(scan))
 
 	p.Describe("models", sdk.Descriptor{
 		Summary:        "List the Jev models the configured key can use — the choices for the model setting",
@@ -77,7 +81,7 @@ func init() {
 		Family:         "code quality",
 		Keywords:       []string{"jev", "models"},
 	})
-	p.Handle("models", models)
+	p.Handle("models", named(models))
 
 	p.Describe("report", sdk.Descriptor{
 		Summary:        "Report a scan: its summary with the worst files, or its findings page by page; no scan_id lists the scans",
@@ -89,7 +93,7 @@ func init() {
 		Family:         "code quality",
 		Keywords:       []string{"code quality", "report", "findings", "summary"},
 	})
-	p.Handle("report", report)
+	p.Handle("report", named(report))
 
 	p.Run()
 }
@@ -255,10 +259,34 @@ func judgeFromSettings() (hostJudge, error) {
 }
 
 func failure(err error) (any, error) {
-	if d, ok := sdk.AsDenied(err); ok {
+	var op *sdk.OperationError
+	switch d, denied := sdk.AsDenied(err); {
+	case err == nil:
+		return nil, nil
+	case denied:
 		return nil, sdk.Deny(d.ReasonCode, "the host denied "+d.Message+" — on the plugin's card, tick files and paste Jev's key; a folder outside the identity's home is added in Settings → Sandbox")
+	case errors.As(err, &op):
+		return nil, err
+	case errors.Is(err, cq.ErrKey):
+		return nil, sdk.Fail("JUDGE_KEY_REFUSED", err.Error())
+	case errors.Is(err, cq.ErrRefused):
+		return nil, sdk.Fail("JUDGE_REFUSED_TEXT", err.Error())
+	case errors.Is(err, cq.ErrJudge):
+		return nil, sdk.Fail("JUDGE_UNAVAILABLE", err.Error()+" — try again later")
 	}
-	return nil, err
+	return nil, sdk.Fail("CODEQUALITY_FAILED", err.Error())
+}
+
+// named is every operation's one exit: the kit carries an error's words only when it is an
+// operation error, and drops the text of any other, so each error leaves here named.
+func named(fn func(sdk.Call) (any, error)) func(sdk.Call) (any, error) {
+	return func(c sdk.Call) (any, error) {
+		out, err := fn(c)
+		if err != nil {
+			return failure(err)
+		}
+		return out, nil
+	}
 }
 
 // ---- models -----------------------------------------------------------------------------------
@@ -330,7 +358,11 @@ func judge(c sdk.Call) (any, error) {
 		}
 		recs = append(recs, rs...)
 	}
-	return map[string]any{"records": recs}, nil
+	raw, err := recordsJSON(recs)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"records": raw, "faults": cq.FaultsOf(recs)}, nil
 }
 
 // ---- scan -------------------------------------------------------------------------------------
@@ -399,11 +431,7 @@ func scan(c sdk.Call) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		calls := maxCalls
-		if n, ok := args.Int("max_calls"); ok && n >= 2 && n < int64(calls) {
-			calls = int(n)
-		}
-		recs, err := s.Step(t, hostFS{s.Root}, j, &hostCache{}, calls, 400)
+		recs, err := s.Step(t, hostFS{s.Root}, j, &hostCache{}, maxCalls, 400)
 		if len(recs) > 0 {
 			var buf []byte
 			for _, r := range recs {
@@ -578,5 +606,25 @@ func report(c sdk.Call) (any, error) {
 		filtered = recs
 	}
 	page, next := cq.Page(filtered, int(cursor), pageBytes, minSev, lang)
-	return map[string]any{"records": page, "next_cursor": next, "total_records": len(filtered)}, nil
+	raw, err := recordsJSON(page)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"records": raw, "faults": cq.FaultsOf(page), "next_cursor": next, "total_records": len(filtered)}, nil
+}
+
+// recordsJSON encodes records for a result. The kit's result encoder takes maps, slices and
+// primitives but no struct — its reflection is what TinyGo cannot run — so a result carrying
+// records hands them over already encoded; encoding/json encodes them, as scan does for its
+// results file. None encodes as an empty list; a record that cannot be encoded fails the call,
+// by name, rather than go missing from it.
+func recordsJSON(recs []cq.Record) (json.RawMessage, error) {
+	if len(recs) == 0 {
+		return json.RawMessage("[]"), nil
+	}
+	b, err := json.Marshal(recs)
+	if err != nil {
+		return nil, sdk.Fail("RESULT_ENCODE_FAILED", "the records could not be encoded: "+err.Error())
+	}
+	return b, nil
 }

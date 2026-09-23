@@ -25,6 +25,17 @@ func ParseRecords(b []byte) ([]Record, error) {
 	return out, sc.Err()
 }
 
+// FaultsOf is Faults for every finding the records carry.
+func FaultsOf(recs []Record) map[string]string {
+	var ids []string
+	for _, r := range recs {
+		for _, f := range r.Findings {
+			ids = append(ids, f.ID)
+		}
+	}
+	return Faults(ids)
+}
+
 // Summary aggregates a scan's records. Means are weighted by lines, so a large file counts for
 // more than a small one; worst lists the lowest-index chunks.
 func Summary(recs []Record, worst int) map[string]any {
@@ -77,8 +88,12 @@ func Summary(recs []Record, worst int) map[string]any {
 		}
 		w = append(w, map[string]any{"ref": r.Ref, "chunk": r.Chunk, "index": r.Index, "band": r.Band, "findings": ids})
 	}
+	ids := make([]string, 0, len(findings))
+	for id := range findings {
+		ids = append(ids, id)
+	}
 	return map[string]any{"chunks_judged": all.chunks, "lines": all.lines, "index": mean(&all), "bands": bands,
-		"languages": langs, "finding_counts": findings, "worst": w}
+		"languages": langs, "finding_counts": findings, "faults": Faults(ids), "worst": w}
 }
 
 var severityRank = map[string]int{"low": 0, "medium": 1, "high": 2}

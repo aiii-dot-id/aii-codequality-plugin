@@ -374,7 +374,7 @@ func TestJudgeReplyReadsTheStatus(t *testing.T) {
 		{0, "", ErrJudge}, {429, "{}", ErrJudge}, {500, "", ErrJudge}, {503, "<html>", ErrJudge},
 		{400, `{"error":"state too large"}`, ErrRefused}, {413, "", ErrRefused}, {422, "{}", ErrRefused},
 		{403, "<html>Attention Required</html>", ErrRefused},
-		{401, `{"error":"bad key"}`, nil}, {403, `{"error":"forbidden"}`, nil},
+		{401, `{"error":"bad key"}`, ErrKey}, {403, `{"error":"forbidden"}`, ErrKey},
 	} {
 		_, err := JudgeReply(c.status, []byte(c.body))
 		switch {
@@ -382,7 +382,7 @@ func TestJudgeReplyReadsTheStatus(t *testing.T) {
 			t.Fatalf("%d must fail", c.status)
 		case c.want != nil && !errors.Is(err, c.want):
 			t.Fatalf("%d %q: got %v, want %v", c.status, c.body, err, c.want)
-		case c.want == nil && (errors.Is(err, ErrJudge) || errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "key")):
+		case c.want == ErrKey && (errors.Is(err, ErrJudge) || errors.Is(err, ErrRefused)):
 			t.Fatalf("%d %q is the key being refused, neither retried nor passed over: %v", c.status, c.body, err)
 		case !strings.Contains(err.Error(), strconv.Itoa(c.status)):
 			t.Fatalf("the status is kept in the error: %v", err)
@@ -403,5 +403,33 @@ func TestLanguagesAreMatchedInAnyCaseAndUnknownOnesRefused(t *testing.T) {
 	}
 	if got, err := tb.Languages(nil); err != nil || got != nil {
 		t.Fatal("no names is no filter")
+	}
+}
+
+// A report says what a finding means: every item the catalogue asks, in any language, is named
+// with its statement; an id the catalogue does not hold is left out; the summary carries the
+// statements of the findings it counts.
+func TestFaultsNameWhatAFindingMeans(t *testing.T) {
+	all := append(append([]Item(nil), general...), docs...)
+	for _, items := range addenda {
+		all = append(all, items...)
+	}
+	for _, it := range all {
+		if got := Faults([]string{it.ID})[it.ID]; got != it.Fault || got == "" {
+			t.Fatalf("%s is named %q, want %q", it.ID, got, it.Fault)
+		}
+	}
+	if f := Faults([]string{"NO-SUCH"}); len(f) != 0 {
+		t.Fatalf("an unknown id is left out: %v", f)
+	}
+	recs := []Record{{Ref: "a.go", Language: "go", Lines: [2]int{1, 10}, Band: "minor", Index: 80,
+		Findings: []Finding{{ID: "EH-01"}, {ID: "ID-GO-01"}}}}
+	sum := Summary(recs, 5)
+	faults, _ := sum["faults"].(map[string]string)
+	if len(faults) != 2 || faults["ID-GO-01"] != "an error is returned without context" || faults["EH-01"] == "" {
+		t.Fatalf("the summary names the faults it counts: %v", sum["faults"])
+	}
+	if f := FaultsOf(recs); len(f) != 2 {
+		t.Fatalf("FaultsOf names the records' findings: %v", f)
 	}
 }

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.4
+
+- **`report`'s findings and `judge`'s results reach the caller.** Both returned records as Go
+  structs, which the plugin kit's result encoder does not take (its reflection is what TinyGo
+  cannot run), so each call failed as a bare `PLUGIN_HANDLER_FAILED`. Records are now handed
+  over already encoded.
+- **Every error leaves named.** The kit keeps the words of an operation error and drops the
+  text of any other, so a Jev outage, a refused key or a failed read also reached the caller as
+  `PLUGIN_HANDLER_FAILED`. Each operation now has one exit that names its error:
+  `JUDGE_UNAVAILABLE`, `JUDGE_KEY_REFUSED`, `JUDGE_REFUSED_TEXT`, or `CODEQUALITY_FAILED` with
+  the reason.
+- **A report says what each finding means.** `report` and `judge` carry `faults`: every finding
+  id they return, with the fault statement it was asked as. Until now a finding arrived as a
+  bare code such as `EH-01`.
+- **A step does twice the work.** Jev answers in well under a second (848 calls: median 0.23 s,
+  max 0.50 s), and a step was held to 6 calls by a 4 s per-call timeout. The timeout is now 2 s
+  and a step makes up to 12 calls: at every call's timeout it still ends inside the host's 30 s
+  invoke wall. `max_calls` is gone from `scan`; a step sizes itself.
+- **`include_tests` says what it costs.** Tests are often most of a large tree, and each file is
+  about two Jev calls.
+
 ## 0.1.3
 
 - **Jev's status decides what a failed call means.** The host hands a 4xx or 5xx back as the

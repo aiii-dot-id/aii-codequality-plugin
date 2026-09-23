@@ -39,7 +39,7 @@
     },
     "include_tests": {
       "type": "boolean",
-      "description": "start: judge test files too (default false)."
+      "description": "start: judge test files too (default false). In a large Go tree tests are often most of the files — over two thirds of AII OS's — and each file costs about two Jev calls, so include them when the tests themselves are what you want measured."
     },
     "max_files": {
       "type": "integer",
@@ -53,12 +53,6 @@
       "maxLength": 64,
       "description": "step: the scan to advance; start: an optional name for the new scan (letters, digits, _ and -).",
       "pattern": "^[A-Za-z0-9_-]+$"
-    },
-    "max_calls": {
-      "type": "integer",
-      "minimum": 2,
-      "maximum": 6,
-      "description": "step: Jev calls this step may make (default 6)."
     }
   },
   "required": [

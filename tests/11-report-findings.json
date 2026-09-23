@@ -1,0 +1,19 @@
+{
+  "name": "report findings",
+  "operation": "report",
+  "arguments": {
+    "scan_id": "fixture",
+    "shape": "findings",
+    "path": "."
+  },
+  "expect": {
+    "status": "succeeded",
+    "result_contains": [
+      "\"records\":[",
+      "\"faults\":"
+    ]
+  },
+  "settings": {
+    "api_key": "jev"
+  }
+}

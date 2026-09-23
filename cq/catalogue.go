@@ -104,6 +104,26 @@ func CodeItems(lang string) []Item {
 	return append(append([]Item(nil), general...), addenda[lang]...)
 }
 
+// Faults names each finding id with the statement it was asked as, so a report says what a
+// finding means and not only its code. An id the catalogue does not hold is left out.
+func Faults(ids []string) map[string]string {
+	all := append(append([]Item(nil), general...), docs...)
+	for _, items := range addenda {
+		all = append(all, items...)
+	}
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := map[string]string{}
+	for _, it := range all {
+		if want[it.ID] {
+			out[it.ID] = it.Fault
+		}
+	}
+	return out
+}
+
 // DocItems is the battery asked over a file's comment text (Markdown: its whole text).
 func DocItems() []Item { return docs }
 

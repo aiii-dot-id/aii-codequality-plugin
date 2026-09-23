@@ -42,12 +42,15 @@ func JudgeReply(status int, body []byte) (map[string]float64, error) {
 	case status == 0 || status == 429 || status >= 500:
 		return nil, fmt.Errorf("%w: Jev answered %d", ErrJudge, status)
 	case status == 401 || status == 403 && json.Valid(body):
-		return nil, fmt.Errorf("Jev refused the key (%d): paste a key that works on the plugin's card", status)
+		return nil, fmt.Errorf("%w (%d): paste a key that works on the plugin's card", ErrKey, status)
 	case status == 403:
 		return nil, fmt.Errorf("%w: Jev's edge answered 403 with a page, not JSON", ErrRefused)
 	}
 	return nil, fmt.Errorf("%w: Jev answered %d: %.200s", ErrRefused, status, body)
 }
+
+// ErrKey wraps Jev refusing the key: no retry helps until the operator pastes one that works.
+var ErrKey = errors.New("Jev refused the key")
 
 // Scoring constants: a Noul at or above PTrue is a finding; between PAbstain and PTrue it is an
 // abstention; below, the fault is absent.

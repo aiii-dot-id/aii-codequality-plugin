@@ -8,6 +8,10 @@
       "items": {
         "type": "object"
       }
+    },
+    "faults": {
+      "type": "object",
+      "description": "each finding id the records carry, with the fault it states"
     }
   },
   "required": [
