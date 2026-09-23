@@ -27,6 +27,8 @@ import (
 const (
 	jevHost     = "net.outbound:api.typesafe.ai:443"
 	jevURL      = "https://api.typesafe.ai/v1/systemone"
+	jevModels   = "https://api.typesafe.ai/v1/models"
+	jevDefault  = "jev-latest"
 	callTimeout = 4000 // ms per Jev call; six calls fit the 30 s invoke wall
 	maxCalls    = 6
 	readPage    = 512 << 10 // below the frame budget once base64-encoded
@@ -63,6 +65,18 @@ func init() {
 		Examples:       []string{`{"action":"start","root":"src","path":"internal"}`, `{"action":"step","scan_id":"cq_1758500000000"}`},
 	})
 	p.Handle("scan", scan)
+
+	p.Describe("models", sdk.Descriptor{
+		Summary:        "List the Jev models the configured key can use — the choices for the model setting",
+		Input:          "schemas/models_in.json",
+		Output:         "schemas/models_out.json",
+		Effects:        sdk.EffectsReadExternal,
+		Capabilities:   []string{jevHost},
+		MaxResultBytes: 65536,
+		Family:         "code quality",
+		Keywords:       []string{"jev", "models"},
+	})
+	p.Handle("models", models)
 
 	p.Describe("report", sdk.Descriptor{
 		Summary:        "Report a scan: its summary with the worst files, or its findings page by page; no scan_id lists the scans",
@@ -223,7 +237,7 @@ func judgeFromSettings() (hostJudge, error) {
 	}
 	model, _ := vals.String("model")
 	if model == "" {
-		model = "jev-1.13.0"
+		model = jevDefault
 	}
 	return hostJudge{handle: handle, model: model}, nil
 }
@@ -233,6 +247,34 @@ func failure(err error) (any, error) {
 		return nil, sdk.Deny(d.ReasonCode, "the host denied "+d.Message+" — grant the folder (plugins.grants.<id>.roots), the host api.typesafe.ai:443 and the credential handle")
 	}
 	return nil, err
+}
+
+// ---- models -----------------------------------------------------------------------------------
+
+// models answers the host's question for the model setting's choices:
+// Jev's own list, read with the operator's key.
+func models(c sdk.Call) (any, error) {
+	j, err := judgeFromSettings()
+	if err != nil {
+		return nil, err
+	}
+	res, err := sdk.HTTP.Get(jevModels, &sdk.HTTPOptions{AuthProfile: j.handle, TimeoutMS: 10000})
+	if err != nil {
+		return failure(err)
+	}
+	raw := []byte(res.Body)
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		raw = []byte(s)
+	}
+	if res.Status != 200 {
+		return nil, sdk.Fail("JUDGE_REFUSED", fmt.Sprintf("Jev answered %d to the model list", res.Status))
+	}
+	choices, err := cq.ModelChoices(raw)
+	if err != nil {
+		return nil, sdk.Fail("JUDGE_REFUSED", err.Error())
+	}
+	return map[string]any{"choices": choices}, nil
 }
 
 // ---- judge ------------------------------------------------------------------------------------

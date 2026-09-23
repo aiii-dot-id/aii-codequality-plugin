@@ -16,6 +16,7 @@ an unchanged file is never asked twice.
 |---|---|---|
 | `judge` | write.external | judges up to six Jev calls' worth of texts passed in (`items: [{ref, text, language?}]`) |
 | `scan` | write.external | `start` a walk of a granted folder, then `step` it until `done`: each step judges files until six Jev calls are used |
+| `models` | read.external | Jev's model list, the choices the card offers for the `model` setting |
 | `report` | read.internal | a scan's summary (index, bands, per-language means, finding counts, worst files) or its findings page by page; no `scan_id` lists the scans |
 
 A scan skips what the language table (Annex L), the folder's `.gitignore` and `.gitattributes`
@@ -37,8 +38,11 @@ Grants on the host (`plugins.grants.id.aiii.codequality`):
 - `hosts`: `["api.typesafe.ai:443"]`
 - `credential_handles`: the auth profile holding Jev's key (Bearer, `api.typesafe.ai:443`)
 
-The operator names that profile in the `api_key` setting. Attaching a stored key to a public host
-requires a review-proven package (T2 or T3).
+On AII OS 0.1.9 or newer, the operator pastes Jev's key into the plugin's card. AII OS keeps
+it and grants it to this plugin for `api.typesafe.ai:443` only. The `model` drop-down is filled
+from Jev's own model list by the `models` operation. On an older host, write the auth profile
+into the config file and name it in the `api_key` setting. Attaching a stored key to a public
+host requires a review-proven package (T2 or T3).
 
 ## Build and test
 

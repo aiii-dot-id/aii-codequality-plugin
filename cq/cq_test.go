@@ -344,3 +344,15 @@ func TestSummaryAndPage(t *testing.T) {
 		t.Fatalf("%+v %d", page, next)
 	}
 }
+
+func TestModelChoicesReadJevsList(t *testing.T) {
+	got, err := ModelChoices([]byte(`{"models":[{"name":"jev-latest","description":"The latest"},{"name":"jev-preview"},{"name":"jev-latest"},{"name":""}]}`))
+	if err != nil || len(got) != 2 || got[0]["value"] != "jev-latest" || got[1]["value"] != "jev-preview" {
+		t.Fatalf("each named model once, in Jev's order: %v %v", got, err)
+	}
+	for _, bad := range []string{`not json`, `{"models":[]}`, `{"models":[{"name":""}]}`} {
+		if _, err := ModelChoices([]byte(bad)); err == nil {
+			t.Errorf("%s: refused", bad)
+		}
+	}
+}

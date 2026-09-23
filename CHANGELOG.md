@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1
+
+- **The key is pasted on the plugin's card.** The `api_key` setting is still a credential handle
+  the plugin never sees. On AII OS 0.1.9 the card takes the key itself, keeps it privately,
+  and grants it to this plugin for `api.typesafe.ai` only.
+- **The model is chosen from Jev's own list.** The `model` setting names a new read operation,
+  `models`, which asks Jev (`GET /v1/models`) with the pasted key. The card offers the answer
+  as a drop-down; if the lookup fails, it keeps a text field and says why.
+- **The default model is `jev-latest`.** That is the name Jev lists; `jev-1.13.0` was not in
+  the list.
+- **Needs AII OS 0.1.9 or newer** (`aiios_min_version`). An older host reads the settings
+  strictly and would refuse this release, so older hosts are not offered it.
+
 ## 0.1.0
 
 First release.
