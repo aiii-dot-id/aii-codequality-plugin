@@ -345,7 +345,9 @@ func (f *unansweredLocate) Choose(state, qs map[string]any) (map[string]Choice, 
 }
 
 // A file whose location call goes unanswered stays pending with its batteries kept, and the retry
-// step, planning only three calls, finishes it from the cache with the one call left to make.
+// step, planning only three calls, finishes it from the cache with the one call left to make; the
+// failure it recovered from is no longer reported (a resident stopped a scan that had recovered,
+// reading the old last_error, 2026-09-23).
 func TestAnUnansweredLocationIsRetriedFromTheCache(t *testing.T) {
 	tb := table(t)
 	root := t.TempDir()
@@ -359,8 +361,8 @@ func TestAnUnansweredLocationIsRetriedFromTheCache(t *testing.T) {
 	}
 	retry := &fakeJudge{p: 0.9, where: "func Bad", conf: 0.9}
 	recs, err := s.Step(tb, fs, retry, c, 3, 50)
-	if err != nil || len(recs) != 1 || s.Status != "done" || retry.calls != 0 || retry.chosen != 1 {
-		t.Fatalf("err %v recs %d status %s: batteries asked again %d, locations %d", err, len(recs), s.Status, retry.calls, retry.chosen)
+	if err != nil || len(recs) != 1 || s.Status != "done" || s.LastError != "" || retry.calls != 0 || retry.chosen != 1 {
+		t.Fatalf("err %v recs %d status %s last_error %q: batteries asked again %d, locations %d", err, len(recs), s.Status, s.LastError, retry.calls, retry.chosen)
 	}
 	if !strings.Contains(recs[0].Findings[0].Where, "func Bad") {
 		t.Fatalf("located %+v", recs[0].Findings[0])

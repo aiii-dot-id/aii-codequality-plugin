@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9
+
+- **`last_error` is the last step's.** A step that recovered from an unanswered call kept
+  reporting the old error beside `status: running`, and a reader took the recovered file for
+  failed again. Each step now clears it; it is set only when that step stopped short.
+
 ## 0.1.8
 
 - **A slow call no longer stalls a scan.** Each Jev call had 2 s, and a file whose call went

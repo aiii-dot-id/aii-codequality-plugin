@@ -51,8 +51,8 @@ type Scan struct {
 	CacheHits    int            `json:"cache_hits"`
 	Excluded     map[string]int `json:"excluded"`
 	LangCounts   map[string]int `json:"languages_judged"`
-	LastError    string         `json:"last_error,omitempty"`
-	Refused      []string       `json:"refused,omitempty"` // files the judge's service refused to take
+	LastError    string         `json:"last_error,omitempty"` // why the last step stopped short; "" once a step ends cleanly
+	Refused      []string       `json:"refused,omitempty"`    // files the judge's service refused to take
 }
 
 // NewScan starts a walk of base inside the folder fs reads. The .gitignore and .gitattributes at
@@ -114,7 +114,7 @@ func (s *Scan) Step(t *Table, fs FS, j Judge, c Cache, maxCalls, maxExamined int
 	if s.Status != "running" && s.Status != "judge_unavailable" {
 		return nil, nil
 	}
-	s.Status = "running"
+	s.Status, s.LastError = "running", ""
 	ign, err := compileRules(s.Ignore)
 	if err != nil {
 		return nil, err
