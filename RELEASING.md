@@ -10,7 +10,7 @@ the AII OS plugin catalog.
    go test -race ./...
    go tool aiisdk build
    go tool aiisdk package
-   go tool aiisdk test -grant root:src=$PWD/testdata/tree -grant net.outbound:api.typesafe.ai:443
+   go tool aiisdk test -grant files=$PWD/testdata/tree -grant net.outbound:api.typesafe.ai:443
    ```
 
    Run the last step against the AII OS release named by `AII_OS_BIN`.

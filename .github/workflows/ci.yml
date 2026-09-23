@@ -55,5 +55,5 @@ jobs:
           curl -sSL -o aii-os.tar.gz "https://github.com/aiii-dot-id/aii-os/releases/download/v${AII_OS_VERSION}/aii-os_${AII_OS_VERSION}_linux_amd64.tar.gz"
           echo "${AII_OS_SHA256}  aii-os.tar.gz" | sha256sum -c -
           mkdir -p oracle && tar -xzf aii-os.tar.gz -C oracle
-      - name: Worker oracle (a granted folder and Jev's host)
-        run: AII_OS_BIN="$PWD/oracle" go tool aiisdk test -grant "root:src=$PWD/testdata/tree" -grant net.outbound:api.typesafe.ai:443 -skip-build
+      - name: Worker oracle (the sandbox and Jev's host)
+        run: AII_OS_BIN="$PWD/oracle" go tool aiisdk test -grant "files=$PWD/testdata/tree" -grant net.outbound:api.typesafe.ai:443 -skip-build

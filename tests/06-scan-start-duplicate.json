@@ -3,7 +3,7 @@
   "operation": "scan",
   "arguments": {
     "action": "start",
-    "root": "src",
+    "path": ".",
     "scan_id": "fixture"
   },
   "expect": {

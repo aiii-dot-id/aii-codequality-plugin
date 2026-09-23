@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- **`scan` works in the identity's sandbox.** The plugin no longer has folders of its own. With
+  files granted on its card, `scan` takes one `path`, named as the identity's own tools name
+  it: relative to its home, or absolute inside a folder added in Settings → Sandbox. The
+  `root` argument is gone.
+- **Capability `fs.sandbox`** replaces `fs.roots`. **Needs AII OS 0.1.10 or newer**
+  (`aiios_min_version`): an older host knows no sandbox for plugins, so it is not offered this
+  release.
+
 ## 0.1.1
 
 - **The key is pasted on the plugin's card.** The `api_key` setting is still a credential handle

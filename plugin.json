@@ -1,11 +1,11 @@
 {
   "id": "id.aiii.codequality",
-  "version": "0.1.1",
-  "aiios_min_version": "0.1.9",
+  "version": "0.1.2",
+  "aiios_min_version": "0.1.10",
   "plugin_family": "tool_bridge",
   "publisher": "AIII",
   "title": "Code quality (Jev)",
-  "description": "Measures source code quality with TypeSafe's Jev as the judge: a fixed catalogue of fault statements asked about each file's code and, separately, its comments; answers scored into findings, six dimension scores, an index and a band. Judges texts passed in, or scans a granted folder a few files per call.",
+  "description": "Measures source code quality with TypeSafe's Jev as the judge: a fixed catalogue of fault statements asked about each file's code and, separately, its comments; answers scored into findings, six dimension scores, an index and a band. Judges texts passed in, or scans a folder in the identity's sandbox a few files per call.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/aiii-dot-id/aii-codequality-plugin",
   "interface": {
@@ -14,7 +14,7 @@
   },
   "capability_envelope": [
     "net.outbound:api.typesafe.ai:443",
-    "fs.roots",
+    "fs.sandbox",
     "fs.private"
   ],
   "variants": [
@@ -27,7 +27,7 @@
       "admission_profile": "wasm_sandbox",
       "variant_capabilities": [
         "net.outbound:api.typesafe.ai:443",
-        "fs.roots",
+        "fs.sandbox",
         "fs.private"
       ]
     },
@@ -40,7 +40,7 @@
       "admission_profile": "wasm_sandbox",
       "variant_capabilities": [
         "net.outbound:api.typesafe.ai:443",
-        "fs.roots",
+        "fs.sandbox",
         "fs.private"
       ]
     },
@@ -53,7 +53,7 @@
       "admission_profile": "wasm_sandbox",
       "variant_capabilities": [
         "net.outbound:api.typesafe.ai:443",
-        "fs.roots",
+        "fs.sandbox",
         "fs.private"
       ]
     },
@@ -66,7 +66,7 @@
       "admission_profile": "wasm_sandbox",
       "variant_capabilities": [
         "net.outbound:api.typesafe.ai:443",
-        "fs.roots",
+        "fs.sandbox",
         "fs.private"
       ]
     }

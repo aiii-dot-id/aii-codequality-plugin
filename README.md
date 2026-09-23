@@ -33,23 +33,22 @@ scans are kept in the private directory.
 
 ## Install
 
-Grants on the host (`plugins.grants.id.aiii.codequality`):
-- `roots`: the folders to scan
-- `hosts`: `["api.typesafe.ai:443"]`
-- `credential_handles`: the auth profile holding Jev's key (Bearer, `api.typesafe.ai:443`)
+Needs AII OS 0.1.10 or newer. On the plugin's card in the dashboard:
+- **Paste Jev's key** and press the card's Save. AII OS keeps it and grants it to this plugin
+  for `api.typesafe.ai:443` only.
+- **Choose the model** from the drop-down, filled from Jev's own list by the `models` operation.
+- **Tick files** and press Save grants. `scan` then works in the identity's own sandbox, by the
+  paths the identity's tools take: its home, and the folders added in Settings → Sandbox. The
+  identity's data directory, key, store and config stay out of reach.
 
-On AII OS 0.1.9 or newer, the operator pastes Jev's key into the plugin's card. AII OS keeps
-it and grants it to this plugin for `api.typesafe.ai:443` only. The `model` drop-down is filled
-from Jev's own model list by the `models` operation. On an older host, write the auth profile
-into the config file and name it in the `api_key` setting. Attaching a stored key to a public
-host requires a review-proven package (T2 or T3).
+Attaching a stored key to a public host requires a review-proven package (T2 or T3).
 
 ## Build and test
 
 ```sh
 TINYGO=/opt/tinygo0.42.0/bin/tinygo ./build.sh
 go test -race ./...
-go tool aiisdk test -grant root:src=$PWD/testdata/tree -grant net.outbound:api.typesafe.ai:443
+go tool aiisdk test -grant files=$PWD/testdata/tree -grant net.outbound:api.typesafe.ai:443
 ```
 
 `cmd/cqvalidate` runs the same core (package `cq`) against Jev over local corpora.

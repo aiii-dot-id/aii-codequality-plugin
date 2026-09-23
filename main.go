@@ -1,14 +1,15 @@
 // id.aiii.codequality — measures source code quality with Jev as the judge.
 //
 // judge  asks the catalogue about texts the caller passes in.
-// scan   walks a folder the operator granted, judging a few files per invoke; its place in the
+// scan   walks a folder in the identity's sandbox, judging a few files per invoke; its place in
 //
-//	walk and its results live in the plugin's private directory.
+//	the walk and its results live in the plugin's private directory.
 //
 // report pages a scan's findings or summarises it.
 //
-// What the host requires of an install: a root grant (plugins.grants.<id>.roots), the host
-// grant api.typesafe.ai:443, and an auth profile for Jev's key named in the api_key setting.
+// What the host requires of an install (AII OS 0.1.10): files, so scan reads the identity's
+// sandbox by the paths its own tools take; the host grant api.typesafe.ai:443 and Jev's key,
+// both given by pasting the key on the plugin's card.
 package main
 
 import (
@@ -35,7 +36,7 @@ const (
 	keepScans   = 8
 )
 
-var caps = []string{jevHost, "fs.roots", "fs.private"}
+var caps = []string{jevHost, "fs.sandbox", "fs.private"}
 
 func init() {
 	p := sdk.New("id.aiii.codequality")
@@ -54,7 +55,7 @@ func init() {
 	p.Handle("judge", judge)
 
 	p.Describe("scan", sdk.Descriptor{
-		Summary:        "Scan a granted folder's source files with Jev, a few per call: start, then step until done",
+		Summary:        "Scan a folder's source files with Jev, a few per call: start, then step until done",
 		Input:          "schemas/scan_in.json",
 		Output:         "schemas/scan_out.json",
 		Effects:        sdk.EffectsWriteExternal,
@@ -62,7 +63,7 @@ func init() {
 		MaxResultBytes: 65536,
 		Family:         "code quality",
 		Keywords:       []string{"code quality", "scan", "repository", "folder", "quality report"},
-		Examples:       []string{`{"action":"start","root":"src","path":"internal"}`, `{"action":"step","scan_id":"cq_1758500000000"}`},
+		Examples:       []string{`{"action":"start","path":"projects/aii-os/internal"}`, `{"action":"step","scan_id":"cq_1758500000000"}`},
 	})
 	p.Handle("scan", scan)
 
@@ -111,10 +112,19 @@ func table() (*cq.Table, error) {
 
 // ---- the host bindings ------------------------------------------------------------------------
 
-type hostFS struct{ root string }
+// hostFS is a folder in the identity's sandbox, named as the identity's own tools name it;
+// the walk's paths are relative to it.
+type hostFS struct{ dir string }
+
+func (f hostFS) at(rel string) string {
+	if rel == "" || rel == "." {
+		return f.dir
+	}
+	return path.Join(f.dir, rel)
+}
 
 func (f hostFS) List(dir string) ([]cq.Entry, bool, error) {
-	es, truncated, err := sdk.Files.List(f.root, dir)
+	es, truncated, err := sdk.Files.List(sdk.SandboxRoot, f.at(dir))
 	if err != nil {
 		return nil, false, err
 	}
@@ -125,7 +135,9 @@ func (f hostFS) List(dir string) ([]cq.Entry, bool, error) {
 	return out, truncated, nil
 }
 
-func (f hostFS) Read(file string, max int64) ([]byte, error) { return readAll(f.root, file, max) }
+func (f hostFS) Read(file string, max int64) ([]byte, error) {
+	return readAll(sdk.SandboxRoot, f.at(file), max)
+}
 
 func readAll(root, file string, max int64) ([]byte, error) {
 	var out []byte
@@ -244,7 +256,7 @@ func judgeFromSettings() (hostJudge, error) {
 
 func failure(err error) (any, error) {
 	if d, ok := sdk.AsDenied(err); ok {
-		return nil, sdk.Deny(d.ReasonCode, "the host denied "+d.Message+" — grant the folder (plugins.grants.<id>.roots), the host api.typesafe.ai:443 and the credential handle")
+		return nil, sdk.Deny(d.ReasonCode, "the host denied "+d.Message+" — on the plugin's card, tick files and paste Jev's key; a folder outside the identity's home is added in Settings → Sandbox")
 	}
 	return nil, err
 }
@@ -424,11 +436,10 @@ func scan(c sdk.Call) (any, error) {
 
 func scanStart(c sdk.Call) (any, error) {
 	args := c.Args()
-	root, _ := args.String("root")
-	if root == "" {
-		return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", "scan start requires root (a granted folder's name)")
+	folder, _ := args.String("path")
+	if folder == "" {
+		return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", "scan start requires path: the folder to scan, as the identity's own tools name it")
 	}
-	base, _ := args.String("path")
 	exclude, _ := args.StringArray("exclude")
 	languages, _ := args.StringArray("languages")
 	tests, _ := args.Bool("include_tests")
@@ -451,11 +462,11 @@ func scanStart(c sdk.Call) (any, error) {
 			id += "_" + strconv.FormatInt(now%997, 10)
 		}
 	}
-	s, err := cq.NewScan(hostFS{root}, id, root, base, exclude, languages, tests, maxFiles, 131072)
+	s, err := cq.NewScan(hostFS{folder}, id, folder, "", exclude, languages, tests, maxFiles, 131072)
 	if err != nil {
 		return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", err.Error())
 	}
-	if _, _, err := sdk.Files.List(root, s.Base); err != nil {
+	if _, _, err := sdk.Files.List(sdk.SandboxRoot, folder); err != nil {
 		return failure(err)
 	}
 	if err := pruneScans(); err != nil {

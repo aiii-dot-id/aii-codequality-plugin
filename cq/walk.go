@@ -28,7 +28,7 @@ type FS interface {
 // plugin stores between invokes.
 type Scan struct {
 	ID           string         `json:"id"`
-	Root         string         `json:"root"`
+	Root         string         `json:"root"` // the folder scanned, as the caller named it
 	Base         string         `json:"base"`
 	Stack        []string       `json:"stack"`
 	Dir          string         `json:"dir"`
@@ -52,8 +52,8 @@ type Scan struct {
 	Refused      []string       `json:"refused,omitempty"` // files the judge's service refused to take
 }
 
-// NewScan starts a walk of base inside a granted root. The root's .gitignore and .gitattributes
-// (at base) are read once, here.
+// NewScan starts a walk of base inside the folder fs reads. The .gitignore and .gitattributes at
+// base are read once, here.
 func NewScan(fs FS, id, root, base string, exclude, languages []string, includeTests bool, maxFiles int, maxFileBytes int64) (*Scan, error) {
 	base = strings.Trim(path.Clean("/"+base), "/")
 	s := &Scan{ID: id, Root: root, Base: base, Stack: []string{base}, Exclude: exclude, Languages: languages,

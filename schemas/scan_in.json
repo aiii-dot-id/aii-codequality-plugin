@@ -9,18 +9,13 @@
         "start",
         "step"
       ],
-      "description": "start a scan of a granted folder, or step an existing one."
-    },
-    "root": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "description": "start: the granted folder's name."
+      "description": "start a scan of a folder, or step an existing one."
     },
     "path": {
       "type": "string",
+      "minLength": 1,
       "maxLength": 512,
-      "description": "start: the directory inside the folder to scan (default: all of it)."
+      "description": "start: the folder to scan, as the identity's own tools name it — relative to its home, or absolute inside a folder its operator granted it (Settings → Sandbox)."
     },
     "exclude": {
       "type": "array",
