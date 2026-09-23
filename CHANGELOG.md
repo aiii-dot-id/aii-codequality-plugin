@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.3
+
+- **Jev's status decides what a failed call means.** The host hands a 4xx or 5xx back as the
+  response and an error; 0.1.2 read only the error, so every failure was taken as "Jev is
+  unavailable" and a text Jev declines was retried at every step, holding the scan on that file.
+  Now 429 and 5xx are retried at the next step; a 403 page from Jev's edge, or any other 4xx,
+  records that file as refused and the scan moves on; a 401, or a 403 in JSON, says the key was
+  refused. The status is kept in `last_error`, which also says the next step retries the file.
+- **Languages are named in any case.** `["Go"]` selected nothing in 0.1.2: every Go file was
+  excluded as `language_not_selected` and the scan reported `done`. A name the table does not
+  know is now refused with the names it does.
+- **`report`'s `path: "."` means every file**, as it does for `scan`.
+
 ## 0.1.2
 
 - **`scan` works in the identity's sandbox.** The plugin no longer has folders of its own. With

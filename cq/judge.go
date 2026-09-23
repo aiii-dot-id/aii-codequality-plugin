@@ -30,6 +30,25 @@ var ErrJudge = errors.New("judge unavailable")
 // command). Retrying cannot help; the text is recorded as not judged.
 var ErrRefused = errors.New("judge refused this text")
 
+// JudgeReply reads Jev's answer to one call by its HTTP status. 200 carries the answers. 429
+// and 5xx are the service being unavailable: ErrJudge, and the next step retries. A 401, or a
+// 403 answered in JSON, is the key being refused — no retry fixes it until the operator pastes
+// a key that works. A 403 page from Jev's edge, and any other 4xx, is Jev declining this text:
+// ErrRefused, and the scan records the file and moves on. Status 0 is no answer at all.
+func JudgeReply(status int, body []byte) (map[string]float64, error) {
+	switch {
+	case status == 200:
+		return ParseAnswers(body)
+	case status == 0 || status == 429 || status >= 500:
+		return nil, fmt.Errorf("%w: Jev answered %d", ErrJudge, status)
+	case status == 401 || status == 403 && json.Valid(body):
+		return nil, fmt.Errorf("Jev refused the key (%d): paste a key that works on the plugin's card", status)
+	case status == 403:
+		return nil, fmt.Errorf("%w: Jev's edge answered 403 with a page, not JSON", ErrRefused)
+	}
+	return nil, fmt.Errorf("%w: Jev answered %d: %.200s", ErrRefused, status, body)
+}
+
 // Scoring constants: a Noul at or above PTrue is a finding; between PAbstain and PTrue it is an
 // abstention; below, the fault is absent.
 const (

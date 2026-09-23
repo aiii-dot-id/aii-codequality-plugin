@@ -185,8 +185,8 @@ func (s *Scan) Step(t *Table, fs FS, j Judge, c Cache, maxCalls, maxExamined int
 		if err != nil {
 			if errors.Is(err, ErrJudge) {
 				s.Status = "judge_unavailable"
-				s.LastError = s.rel(file) + ": " + err.Error()
-				return out, nil // the file stays pending: the next step retries it
+				s.LastError = s.rel(file) + ": " + err.Error() + " — the next step retries this file"
+				return out, nil // the file stays pending
 			}
 			return out, err
 		}

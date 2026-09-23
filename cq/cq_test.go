@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -293,7 +294,7 @@ func TestScanJudgeFailureKeepsCursor(t *testing.T) {
 	s, _ := NewScan(fs, "cq_2", "src", "", nil, nil, false, 100, 131072)
 	bad := &failJudge{}
 	recs, err := s.Step(tb, fs, bad, MemCache{}, 6, 50)
-	if err != nil || len(recs) != 0 || s.Status != "judge_unavailable" || len(s.Pending) != 2 || s.FilesSeen != 0 {
+	if err != nil || len(recs) != 0 || s.Status != "judge_unavailable" || len(s.Pending) != 2 || s.FilesSeen != 0 || !strings.HasSuffix(s.LastError, "the next step retries this file") {
 		t.Fatalf("err %v recs %d status %s pending %d seen %d", err, len(recs), s.Status, len(s.Pending), s.FilesSeen)
 	}
 	recs, err = s.Step(tb, fs, &fakeJudge{p: 0.9}, MemCache{}, 6, 50)
@@ -354,5 +355,53 @@ func TestModelChoicesReadJevsList(t *testing.T) {
 		if _, err := ModelChoices([]byte(bad)); err == nil {
 			t.Errorf("%s: refused", bad)
 		}
+	}
+}
+
+// Jev's status decides what a failed call means: unavailable is retried, a text Jev declines is
+// recorded and passed, a refused key stops the scan with what to do — and the status is kept in
+// the error, so a stopped scan says what Jev answered.
+func TestJudgeReplyReadsTheStatus(t *testing.T) {
+	answers := []byte(`{"answers":{"EH-01":{"type":"noul","noul":0.83}}}`)
+	if _, err := JudgeReply(200, answers); err != nil {
+		t.Fatalf("200 carries answers: %v", err)
+	}
+	for _, c := range []struct {
+		status int
+		body   string
+		want   error
+	}{
+		{0, "", ErrJudge}, {429, "{}", ErrJudge}, {500, "", ErrJudge}, {503, "<html>", ErrJudge},
+		{400, `{"error":"state too large"}`, ErrRefused}, {413, "", ErrRefused}, {422, "{}", ErrRefused},
+		{403, "<html>Attention Required</html>", ErrRefused},
+		{401, `{"error":"bad key"}`, nil}, {403, `{"error":"forbidden"}`, nil},
+	} {
+		_, err := JudgeReply(c.status, []byte(c.body))
+		switch {
+		case err == nil:
+			t.Fatalf("%d must fail", c.status)
+		case c.want != nil && !errors.Is(err, c.want):
+			t.Fatalf("%d %q: got %v, want %v", c.status, c.body, err, c.want)
+		case c.want == nil && (errors.Is(err, ErrJudge) || errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "key")):
+			t.Fatalf("%d %q is the key being refused, neither retried nor passed over: %v", c.status, c.body, err)
+		case !strings.Contains(err.Error(), strconv.Itoa(c.status)):
+			t.Fatalf("the status is kept in the error: %v", err)
+		}
+	}
+}
+
+// A language is named in any case and answered in the table's spelling; a name the table does
+// not know is refused with the names it does, never a filter that silently matches nothing.
+func TestLanguagesAreMatchedInAnyCaseAndUnknownOnesRefused(t *testing.T) {
+	tb := table(t)
+	got, err := tb.Languages([]string{"Go", " MARKDOWN ", "go"})
+	if err != nil || strings.Join(got, ",") != "go,markdown,go" {
+		t.Fatalf("got %v %v", got, err)
+	}
+	if _, err := tb.Languages([]string{"golang"}); err == nil || !strings.Contains(err.Error(), `"golang"`) || !strings.Contains(err.Error(), "go, ") {
+		t.Fatalf("an unknown name is refused, listing the known: %v", err)
+	}
+	if got, err := tb.Languages(nil); err != nil || got != nil {
+		t.Fatal("no names is no filter")
 	}
 }

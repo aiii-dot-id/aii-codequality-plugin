@@ -169,28 +169,28 @@ func (j hostJudge) Ask(state, questions map[string]any) (map[string]float64, err
 	if err != nil {
 		return nil, err
 	}
+	// A 4xx or 5xx comes back as the response AND an error (the SDK's contract): the status,
+	// not the error, says what happened. Only a denial, or no response at all, is the error's.
 	res, err := sdk.HTTP.Post(jevURL, &sdk.HTTPOptions{Body: string(body), ContentType: "application/json",
 		AuthProfile: j.handle, TimeoutMS: callTimeout})
-	if err != nil {
-		if _, denied := sdk.AsDenied(err); denied {
-			return nil, err // a grant or profile is missing: not something a retry fixes
-		}
+	if _, denied := sdk.AsDenied(err); denied {
+		return nil, err // a grant or profile is missing: not something a retry fixes
+	}
+	if err != nil && res.Status == 0 {
 		return nil, fmt.Errorf("%w: %v", cq.ErrJudge, err)
 	}
+	return cq.JudgeReply(res.Status, responseBody(res))
+}
+
+// responseBody is a response's body as bytes: the host hands JSON over as JSON and anything else as a
+// string.
+func responseBody(res sdk.HTTPResult) []byte {
 	raw := []byte(res.Body)
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
 		raw = []byte(s)
 	}
-	switch {
-	case res.Status == 200:
-		return cq.ParseAnswers(raw)
-	case res.Status == 429 || res.Status >= 500:
-		return nil, fmt.Errorf("%w: Jev answered %d", cq.ErrJudge, res.Status)
-	case res.Status == 403 && !json.Valid(raw):
-		return nil, fmt.Errorf("%w: Jev's edge answered 403 with a page, not JSON", cq.ErrRefused)
-	}
-	return nil, sdk.Fail("JUDGE_REFUSED", fmt.Sprintf("Jev answered %d: %.300s", res.Status, raw))
+	return raw
 }
 
 // hostCache keeps answers in 16 append-only shard files of the private directory.
@@ -271,16 +271,12 @@ func models(c sdk.Call) (any, error) {
 		return nil, err
 	}
 	res, err := sdk.HTTP.Get(jevModels, &sdk.HTTPOptions{AuthProfile: j.handle, TimeoutMS: 10000})
-	if err != nil {
+	if err != nil && res.Status == 0 {
 		return failure(err)
 	}
-	raw := []byte(res.Body)
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		raw = []byte(s)
-	}
+	raw := responseBody(res)
 	if res.Status != 200 {
-		return nil, sdk.Fail("JUDGE_REFUSED", fmt.Sprintf("Jev answered %d to the model list", res.Status))
+		return nil, sdk.Fail("JUDGE_REFUSED", fmt.Sprintf("Jev answered %d to the model list: %.200s", res.Status, raw))
 	}
 	choices, err := cq.ModelChoices(raw)
 	if err != nil {
@@ -318,6 +314,7 @@ func judge(c sdk.Call) (any, error) {
 		ref, _ := it.String("ref")
 		text, _ := it.String("text")
 		lang, _ := it.String("language")
+		lang = strings.ToLower(lang)
 		if lang == "" {
 			lang = t.Detect(ref, []byte(text))
 		}
@@ -441,7 +438,15 @@ func scanStart(c sdk.Call) (any, error) {
 		return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", "scan start requires path: the folder to scan, as the identity's own tools name it")
 	}
 	exclude, _ := args.StringArray("exclude")
-	languages, _ := args.StringArray("languages")
+	t, err := table()
+	if err != nil {
+		return nil, err
+	}
+	asked, _ := args.StringArray("languages")
+	languages, err := t.Languages(asked)
+	if err != nil {
+		return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", err.Error())
+	}
 	tests, _ := args.Bool("include_tests")
 	maxFiles := 5000
 	if n, ok := args.Int("max_files"); ok && n > 0 && n < 100000 {
@@ -561,8 +566,9 @@ func report(c sdk.Call) (any, error) {
 		minSev = "low"
 	}
 	lang, _ := args.String("language")
+	lang = strings.ToLower(lang)
 	var filtered []cq.Record
-	if glob, _ := args.String("path"); glob != "" {
+	if glob, _ := args.String("path"); glob != "" && glob != "." {
 		for _, r := range recs {
 			if ok, _ := path.Match(glob, r.Ref); ok || strings.HasPrefix(r.Ref, strings.TrimSuffix(glob, "*")) {
 				filtered = append(filtered, r)

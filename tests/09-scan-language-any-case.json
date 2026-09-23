@@ -1,0 +1,22 @@
+{
+  "name": "a language is named in any case",
+  "operation": "scan",
+  "arguments": {
+    "action": "start",
+    "path": ".",
+    "scan_id": "fixture_go",
+    "languages": [
+      "Go"
+    ]
+  },
+  "expect": {
+    "status": "succeeded",
+    "result_contains": [
+      "\"scan_id\":\"fixture_go\"",
+      "\"status\":\"running\""
+    ]
+  },
+  "settings": {
+    "api_key": "jev"
+  }
+}

@@ -121,6 +121,26 @@ func LoadTable() (*Table, error) {
 
 // Detect names a file's language from its path and first bytes, or "" when it is not a language
 // the table knows.
+// Languages holds names a caller gave to the table: each is matched in any case and answered in
+// the table's own spelling; a name the table does not know is refused, listing the ones it does,
+// because a filter that silently matched nothing would read as a scan that found nothing.
+func (t *Table) Languages(names []string) ([]string, error) {
+	var out []string
+	for _, n := range names {
+		l := strings.ToLower(strings.TrimSpace(n))
+		if t.Langs[l] == nil {
+			known := make([]string, 0, len(t.Langs))
+			for k := range t.Langs {
+				known = append(known, k)
+			}
+			sort.Strings(known)
+			return nil, fmt.Errorf("unknown language %q; the table knows %s", n, strings.Join(known, ", "))
+		}
+		out = append(out, l)
+	}
+	return out, nil
+}
+
 func (t *Table) Detect(rel string, head []byte) string {
 	base := path.Base(rel)
 	if k, ok := specialFilenames[base]; ok && t.Langs[k] != nil {

@@ -1,0 +1,19 @@
+{
+  "name": "an unknown language is refused by name",
+  "operation": "scan",
+  "arguments": {
+    "action": "start",
+    "path": ".",
+    "scan_id": "fixture_x",
+    "languages": [
+      "golang"
+    ]
+  },
+  "expect": {
+    "status": "failed",
+    "reason_code": "OPERATION_ARGUMENT_INVALID"
+  },
+  "settings": {
+    "api_key": "jev"
+  }
+}
