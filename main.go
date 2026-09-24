@@ -658,7 +658,10 @@ func report(c sdk.Call) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"records": raw, "faults": cq.FaultsOf(page), "next_cursor": next, "total_records": len(selected)}, nil
+	// A record's ref is relative to the folder scanned; root names it, so a reader opens the file
+	// without guessing where the scan began.
+	return map[string]any{"root": s.Root, "records": raw, "faults": cq.FaultsOf(page), "next_cursor": next,
+		"total_records": len(selected)}, nil
 }
 
 // recordsJSON encodes records for a result. The kit's result encoder takes maps, slices and

@@ -24,13 +24,16 @@ type Unit struct {
 // and runs to the line before the next. When one unit holds most of the chunk (a class around
 // its methods), its body is split one level deeper instead. Short runs of one-line units are
 // merged, and the count is capped at MaxUnits by merging neighbours. firstLine is the chunk's
-// first line in the file.
-func Units(text string, firstLine int) []Unit {
+// first line in the file. inString marks, from the chunk's first line, the lines that begin inside
+// a string (BlankComments): a raw string's text at column 0 is not a declaration, so such a line
+// never starts a unit.
+func Units(text string, firstLine int, inString []bool) []Unit {
 	lines := strings.Split(text, "\n")
-	spans := split(lines, 0, len(lines))
+	code := func(i int) bool { return i >= len(inString) || !inString[i] }
+	spans := split(lines, code, 0, len(lines))
 	if len(spans) == 1 {
 		s := spans[0]
-		if inner := split(lines, s[0]+1, s[1]); len(inner) > 1 {
+		if inner := split(lines, code, s[0]+1, s[1]); len(inner) > 1 {
 			spans = append([][2]int{{s[0], inner[0][0]}}, inner...)
 			spans[len(spans)-1][1] = s[1]
 		}
@@ -66,19 +69,19 @@ func Units(text string, firstLine int) []Unit {
 	return out
 }
 
-// split returns [start, end) spans of lines[from:to] beginning at each line at the shallowest
-// indentation there that opens something rather than closing it. Lines before the first such
-// line join the first span.
-func split(lines []string, from, to int) [][2]int {
+// split returns [start, end) spans of lines[from:to] beginning at each code line at the
+// shallowest indentation there that opens something rather than closing it. Lines before the
+// first such line join the first span.
+func split(lines []string, code func(int) bool, from, to int) [][2]int {
 	min := -1
-	for _, l := range lines[from:to] {
-		if d, ok := depth(l); ok && !closer(l) && (min < 0 || d < min) {
+	for i := from; i < to; i++ {
+		if d, ok := depth(lines[i]); ok && code(i) && !closer(lines[i]) && (min < 0 || d < min) {
 			min = d
 		}
 	}
 	var starts []int
 	for i := from; i < to; i++ {
-		if d, ok := depth(lines[i]); ok && d == min && !closer(lines[i]) {
+		if d, ok := depth(lines[i]); ok && d == min && code(i) && !closer(lines[i]) {
 			starts = append(starts, i)
 		}
 	}

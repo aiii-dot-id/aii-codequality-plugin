@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.10
+
+- **A raw string no longer cuts a function into units.** A multi-line raw string whose lines
+  start at column 0 (a command's usage text in backticks, a template literal) was split as if
+  each line began a declaration, so a location named a fragment of the right function. The
+  comment lexer, which already follows every language's strings, now reports the lines that
+  begin inside one, and the splitter never starts a unit there.
+- **A location is kept for the units it was asked about.** Its cache key covers the units
+  offered, so a text split differently is asked again. Scans made earlier ask each location
+  once more.
+- **A findings page names the folder scanned** (`root`): its records' paths are relative to it.
+- **Measured on a fourth codebase**: 122 Go files from four repositories. No statement changes
+  side; findings run 73–88%, EH-02 is a lead at 56%.
+
 ## 0.1.9
 
 - **`last_error` is the last step's.** A step that recovered from an unanswered call kept

@@ -19,8 +19,9 @@ var (
 // BlankComments removes the comments of text in language L, keeping every newline so line
 // numbers survive, and returns the blanked code and the comment text. It is string-aware for
 // ", ', ` and Python's triple quotes (which it treats as documentation). lostTrack is set when
-// the scan ends inside a string or block comment.
-func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bool) {
+// the scan ends inside a string or block comment. inString marks, by line from 0, the lines that
+// begin inside a string: the body of a multi-line raw string, which is text and not code.
+func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bool, inString []bool) {
 	blocks := L.Blocks
 	pyTriple := L.Key == "python"
 	if pyTriple {
@@ -32,11 +33,15 @@ func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bo
 	var cm []string
 	inStr := ""
 	raw := false
+	var strNL []int // offsets of the newlines inside strings
 	i := 0
 	for i < n {
 		c := text[i]
 		if inStr != "" {
 			if c == '\\' && !raw && i+1 < n {
+				if text[i+1] == '\n' {
+					strNL = append(strNL, i+1)
+				}
 				out.WriteByte(c)
 				out.WriteByte(text[i+1])
 				i += 2
@@ -54,6 +59,9 @@ func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bo
 				i += len(inStr)
 				inStr, raw = "", false
 				continue
+			}
+			if c == '\n' {
+				strNL = append(strNL, i)
 			}
 			out.WriteByte(c)
 			i++
@@ -131,7 +139,14 @@ func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bo
 	if inStr != "" {
 		lostTrack = true
 	}
-	return trailingSpace.ReplaceAllString(out.String(), "\n"), strings.Join(cm, "\n"), lostTrack
+	inString = make([]bool, strings.Count(text, "\n")+1)
+	line, from := 0, 0
+	for _, off := range strNL {
+		line += strings.Count(text[from:off], "\n")
+		from = off
+		inString[line+1] = true // the line after this newline begins inside the string
+	}
+	return trailingSpace.ReplaceAllString(out.String(), "\n"), strings.Join(cm, "\n"), lostTrack, inString
 }
 
 // charLiteral returns the length of a character literal ('x', '\n', or two-byte forms) at the

@@ -239,10 +239,11 @@ func JudgeText(t *Table, j Judge, c Cache, ref, lang, text string) ([]Record, er
 		return nil, fmt.Errorf("language %q is not in the table", lang)
 	}
 	var blanked, comments string
+	var inString []bool
 	if lang == "markdown" {
 		comments = text // Markdown is judged as documentation, whole
 	} else {
-		blanked, comments, _ = BlankComments(text, L)
+		blanked, comments, _, inString = BlankComments(text, L)
 	}
 	blanked, k1 := Redact(blanked)
 	comments, k2 := Redact(comments)
@@ -316,7 +317,7 @@ func JudgeText(t *Table, j Judge, c Cache, ref, lang, text string) ([]Record, er
 		}
 		r.Findings, r.Abstained, r.Dimensions, r.Index, r.Uncertain = Score(lang, r.Answers, i == 0 && docsAsked)
 		r.Band = Band(r.Index)
-		used, hit, err := locate(j, c, lang, model, ch, r.Findings)
+		used, hit, err := locate(j, c, lang, model, ch, linesOf(inString, ch), r.Findings)
 		if err != nil {
 			return recs, err
 		}
@@ -330,10 +331,19 @@ func JudgeText(t *Table, j Judge, c Cache, ref, lang, text string) ([]Record, er
 	return recs, nil
 }
 
+// linesOf is the part of a file's per-line marks that falls in chunk ch.
+func linesOf(marks []bool, ch Chunk) []bool {
+	lo, hi := ch.FirstLine-1, ch.LastLine
+	if lo >= len(marks) {
+		return nil
+	}
+	return marks[lo:min(hi, len(marks))]
+}
+
 // locate asks, in one call, which unit of the chunk holds each of its code findings, and sets a
 // finding's Where when Jev's confidence in the unit is at least WhereMin. A chunk that is one unit
 // has nothing to choose between and is not asked. It returns the calls made and the cache hits.
-func locate(j Judge, c Cache, lang, model string, ch Chunk, findings []Finding) (calls, hits int, err error) {
+func locate(j Judge, c Cache, lang, model string, ch Chunk, inString []bool, findings []Finding) (calls, hits int, err error) {
 	code := map[string]string{}
 	for _, it := range CodeItems(lang) {
 		code[it.ID] = it.Fault
@@ -344,7 +354,7 @@ func locate(j Judge, c Cache, lang, model string, ch Chunk, findings []Finding) 
 			ids = append(ids, f.ID)
 		}
 	}
-	units := Units(ch.Text, ch.FirstLine)
+	units := Units(ch.Text, ch.FirstLine, inString)
 	if len(ids) == 0 || len(units) < 2 {
 		return 0, 0, nil
 	}
@@ -360,7 +370,13 @@ func locate(j Judge, c Cache, lang, model string, ch Chunk, findings []Finding) 
 		questions[id] = map[string]any{"type": "choice", "criteria": options,
 			"instructions": "In `units`: which unit contains the place where " + code[id] + "?"}
 	}
-	key := CacheKey(ch.Text+"\x00"+strings.Join(ids, ","), lang, model, "locate")
+	keys := make([]string, len(units))
+	for i, u := range units {
+		keys[i] = u.Key
+	}
+	// The key binds the answer to the question: the text, the findings asked about and the units
+	// offered, so a change in how a text is split asks again rather than reuse a stale choice.
+	key := CacheKey(ch.Text+"\x00"+strings.Join(ids, ",")+"\x00"+strings.Join(keys, "\n"), lang, model, "locate")
 	var got map[string]Choice
 	hit, err := cached(c, key, &got)
 	if err != nil {

@@ -51,7 +51,7 @@ func TestDetect(t *testing.T) {
 func TestBlankCommentsKeepsLinesAndStrings(t *testing.T) {
 	tb := table(t)
 	src := "package x\n\n// Doc says hi.\nfunc F() string { /* inline\nblock */ return \"a // not a comment\" + `raw /* x */` }\n"
-	b, c, lost := BlankComments(src, tb.Langs["go"])
+	b, c, lost, _ := BlankComments(src, tb.Langs["go"])
 	if strings.Count(b, "\n") != strings.Count(src, "\n") {
 		t.Fatalf("lines changed:\n%s", b)
 	}
@@ -65,7 +65,7 @@ func TestBlankCommentsKeepsLinesAndStrings(t *testing.T) {
 		t.Fatalf("comments %q lost %v", c, lost)
 	}
 	py := "def f(x):\n    \"\"\"Docstring.\"\"\"\n    s = '# no'  # yes\n    return s\n"
-	b, c, _ = BlankComments(py, tb.Langs["python"])
+	b, c, _, _ = BlankComments(py, tb.Langs["python"])
 	if strings.Contains(b, "Docstring") || strings.Contains(b, "# yes") || !strings.Contains(b, "'# no'") {
 		t.Fatalf("python blanking:\n%s", b)
 	}
@@ -73,7 +73,7 @@ func TestBlankCommentsKeepsLinesAndStrings(t *testing.T) {
 		t.Fatalf("python comments %q", c)
 	}
 	rs := "fn f<'a>(c: char) -> bool { c == '\"' } // q\n"
-	b, _, lost = BlankComments(rs, tb.Langs["rust"])
+	b, _, lost, _ = BlankComments(rs, tb.Langs["rust"])
 	if strings.Contains(b, "// q") || lost {
 		t.Fatalf("rust char literal / lifetime: %q lost=%v", b, lost)
 	}
@@ -539,9 +539,60 @@ func TestFaultsNameWhatAFindingMeans(t *testing.T) {
 // A chunk splits into its top-level units, each named by its lines and first line: Go functions
 // and types, a Java class split at its methods, Python definitions; lines count from the chunk's
 // first line; short declarations merge; the count never passes MaxUnits.
+// A multi-line raw string is text, not code: its lines at column 0 do not start units, so a
+// command whose usage text is a raw string stays one unit (three of aii-plugin-sdk's commands were
+// cut into pieces headed by the string's closing line, 2026-09-23). The lexer marks exactly the
+// lines that begin inside such a string, and not the line after an unterminated one-line string.
+func TestARawStringDoesNotSplitAUnit(t *testing.T) {
+	tb := table(t)
+	goSrc := "package p\n\nfunc cmdSign(args []string) int {\n\tusage := `Usage: sign\n\nSigns the staged tree.\n  1. reads it\n`\n\treturn len(usage)\n}\n\nfunc other() int {\n\treturn 2\n}\n"
+	b, _, _, in := BlankComments(goSrc, tb.Langs["go"])
+	want := []bool{false, false, false, false, true, true, true, true, false, false, false, false, false, false, false}
+	if fmt.Sprint(in) != fmt.Sprint(want) {
+		t.Fatalf("lines inside the string:\n got %v\nwant %v", in, want)
+	}
+	var heads []string
+	for _, u := range Units(b, 1, in) {
+		heads = append(heads, u.Key)
+	}
+	if len(heads) != 3 || !strings.Contains(heads[1], "lines 3-10: func cmdSign") || !strings.Contains(heads[2], "func other") {
+		t.Fatalf("the command is one unit: %q", heads)
+	}
+	js := "function a() {\n  const t = `\nline one\nline two\n`;\n  return t;\n}\n\nfunction b() {\n  return 1;\n}\n"
+	b, _, _, in = BlankComments(js, tb.Langs["javascript"])
+	if u := Units(b, 1, in); len(u) != 2 || !strings.HasPrefix(u[0].Key, "lines 1-7: function a()") {
+		t.Fatalf("a template literal is text: %+v", u)
+	}
+	_, _, lost, in := BlankComments("x := \"open\ny := 1\n", tb.Langs["go"])
+	if !lost || in[1] {
+		t.Fatalf("an unterminated one-line string ends at its line: lost %v, marks %v", lost, in)
+	}
+}
+
+// A location answer is kept for the units it was asked about: split differently, the same text is
+// asked again rather than answered with a choice among units no longer offered.
+func TestALocationIsAskedAgainWhenTheUnitsChange(t *testing.T) {
+	src := "package x\n\nfunc Good(a, b int) int {\n\treturn a + b\n}\n\nfunc Bad(path string) string {\n\tb, _ := os.ReadFile(path)\n\treturn string(b) + \"padding padding padding\"\n}\n"
+	j := &fakeJudge{p: 0.9, where: "func Bad", conf: 0.9}
+	c := MemCache{}
+	ch := Chunks(src)[0]
+	fs := []Finding{{ID: "EH-01"}}
+	if calls, _, err := locate(j, c, "go", "fake", ch, nil, fs); err != nil || calls != 1 {
+		t.Fatalf("first ask: %d %v", calls, err)
+	}
+	if calls, hits, _ := locate(j, c, "go", "fake", ch, nil, fs); calls != 0 || hits != 1 {
+		t.Fatalf("the same units are answered from the cache: calls %d hits %d", calls, hits)
+	}
+	in := make([]bool, 11)
+	in[6] = true // line 7, "func Bad", now read as the inside of a string
+	if calls, _, _ := locate(j, c, "go", "fake", ch, in, fs); calls != 1 || j.chosen != 2 {
+		t.Fatalf("other units are asked again: calls %d, chosen %d", calls, j.chosen)
+	}
+}
+
 func TestUnitsSplitAChunkAtItsTopLevel(t *testing.T) {
 	goSrc := "package p\n\nimport \"fmt\"\n\ntype T struct {\n\tn int\n}\n\nfunc (t T) A() int {\n\treturn t.n\n}\n\nfunc B() {\n\tfmt.Println(1)\n}\n"
-	u := Units(goSrc, 1)
+	u := Units(goSrc, 1, nil)
 	var keys []string
 	for _, x := range u {
 		keys = append(keys, x.Key)
@@ -555,7 +606,7 @@ func TestUnitsSplitAChunkAtItsTopLevel(t *testing.T) {
 	}
 	java := "public class C {\n    private int n;\n\n    int a() {\n        return n;\n    }\n\n    void b() {\n        n++;\n    }\n}\n"
 	keys = nil
-	for _, x := range Units(java, 100) {
+	for _, x := range Units(java, 100, nil) {
 		keys = append(keys, x.Key)
 	}
 	if len(keys) != 3 || !strings.HasPrefix(keys[1], "lines 103-105: int a()") || !strings.HasPrefix(keys[2], "lines 107-110: void b()") {
@@ -563,7 +614,7 @@ func TestUnitsSplitAChunkAtItsTopLevel(t *testing.T) {
 	}
 	py := "import os\nimport sys\n\ndef f(x):\n    return x\n\nclass K:\n    def g(self):\n        pass\n"
 	keys = nil
-	for _, x := range Units(py, 1) {
+	for _, x := range Units(py, 1, nil) {
 		keys = append(keys, x.Key)
 	}
 	if len(keys) != 3 || !strings.HasPrefix(keys[0], "lines 1-2: import os") || !strings.HasPrefix(keys[1], "lines 4-5: def f(x):") {
@@ -573,10 +624,10 @@ func TestUnitsSplitAChunkAtItsTopLevel(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		fmt.Fprintf(&many, "func f%d() {\n\tx := %d\n\t_ = x\n}\n", i, i)
 	}
-	if n := len(Units(many.String(), 1)); n > MaxUnits || n < MaxUnits/2 {
+	if n := len(Units(many.String(), 1, nil)); n > MaxUnits || n < MaxUnits/2 {
 		t.Fatalf("%d units for 200 functions", n)
 	}
-	if u := Units("x = 1", 7); len(u) != 1 || u[0].Key != "lines 7-7: x = 1" {
+	if u := Units("x = 1", 7, nil); len(u) != 1 || u[0].Key != "lines 7-7: x = 1" {
 		t.Fatalf("one line is one unit: %+v", u)
 	}
 }
@@ -643,7 +694,7 @@ func Bad(path string) string {
 		}
 	}
 	if !Lead("EH-02") || Lead("ST-01") {
-		t.Fatal("at 23 of 39 EH-02 is a lead, at 9 of 14 ST-01 a finding (the 60% line, 96 files)")
+		t.Fatal("at 25 of 45 EH-02 is a lead, at 15 of 20 ST-01 a finding (the 60% line, 122 files)")
 	}
 	sum := Summary(recs, 5)
 	fc, lc := sum["finding_counts"].(map[string]int), sum["lead_counts"].(map[string]int)

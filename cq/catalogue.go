@@ -103,13 +103,13 @@ func CodeItems(lang string) []Item {
 }
 
 // precision holds, per statement, the findings a blind review confirmed and the findings it
-// reviewed, over 96 Go files from three repositories. A statement with too few findings to
+// reviewed, over 122 Go files from four repositories. A statement with too few findings to
 // measure, or none measured (the comment statements, the other languages' own), is absent.
 var precision = map[string][2]int{
-	"EH-01": {27, 32}, "RD-03": {28, 34}, "ID-GO-01": {14, 18}, "ST-02": {21, 28}, "ST-01": {9, 14},
-	"EH-02": {23, 39}, "RD-01": {5, 9}, "DF-02": {3, 6}, "EH-04": {4, 10}, "DF-04": {9, 23},
-	"EH-03": {5, 13}, "DF-03": {2, 10}, "DF-01": {3, 17}, "ID-GO-03": {1, 7}, "RD-04": {2, 17},
-	"ST-04": {1, 18},
+	"EH-01": {36, 41}, "RD-03": {36, 43}, "ID-GO-01": {16, 21}, "ST-01": {15, 20}, "ST-02": {24, 33},
+	"EH-02": {25, 45}, "RD-01": {5, 9}, "EH-04": {7, 14}, "DF-02": {3, 7}, "EH-03": {5, 13},
+	"DF-04": {9, 27}, "DF-03": {2, 10}, "DF-01": {3, 20}, "ID-GO-03": {1, 7}, "RD-04": {4, 26},
+	"ST-04": {1, 25},
 }
 
 // ReportMin is the measured precision, in percent, at which a statement's findings are reported

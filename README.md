@@ -13,15 +13,18 @@ an unchanged file is never asked twice.
 ## Findings, leads and locations
 
 A statement's findings are reported as **findings** when a blind review confirmed at least 60% of
-them, and as **leads** otherwise: a lead is a place to look, not a verdict. Measured on 96 Go files
-from three repositories: EH-01 84%, RD-03 82%, ID-GO-01 78%, ST-02 75% and ST-01 64% are findings;
-the other statements (EH-02 is next, at 59%), and those not yet measured (the comment statements,
-other languages' own), are leads. Leads still count in the index, which was validated with them.
+them, and as **leads** otherwise: a lead is a place to look, not a verdict. Measured on 122 Go
+files from four repositories: EH-01 88%, RD-03 84%, ID-GO-01 76%, ST-01 75% and ST-02 73% are
+findings; the other statements (EH-02 is next, at 56%), and those not yet measured (the comment
+statements, other languages' own), are leads. Leads still count in the index, which was
+validated with them.
 
 Each code finding and lead names the **unit** that holds it — a function, type or declaration
 block, by its lines — when Jev locates it with confidence 0.7 or more; on reviewed findings those
-locations held the reviewer's line 49 times in 56. Below 0.7 it is left unlocated rather than
-guessed. Locating costs one more call per chunk with findings, and is cached like every answer.
+locations held the reviewer's line 49 times in 56, and 31 in 40 on two later codebases before
+0.1.10 stopped a multi-line raw string from cutting a function into pieces. Below 0.7 it is left
+unlocated rather than guessed. Locating costs one more call per chunk with findings, and is
+cached like every answer.
 
 ## Operations
 
@@ -30,7 +33,7 @@ guessed. Locating costs one more call per chunk with findings, and is cached lik
 | `judge` | write.external | judges up to twelve Jev calls' worth of texts passed in (`items: [{ref, text, language?}]`) |
 | `scan` | write.external | `start` a walk of a folder in the identity's sandbox, then `step` it until `done`: each step judges files until twelve Jev calls are used |
 | `models` | read.external | Jev's model list, the choices the card offers for the `model` setting |
-| `report` | read.internal | a scan's summary (index, bands, per-language means, finding and lead counts, worst files) or its findings and leads page by page, with the fault statements they name; no `scan_id` lists the scans |
+| `report` | read.internal | a scan's summary (index, bands, per-language means, finding and lead counts, worst files) or its findings and leads page by page, with the fault statements they name and the folder the paths are relative to (`root`); no `scan_id` lists the scans |
 
 A scan skips what the language table, the folder's `.gitignore` and `.gitattributes`
 (vendored / generated / documentation), and the caller's `exclude` globs leave out. It also
