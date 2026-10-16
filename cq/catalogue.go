@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 package cq
 
 import (
@@ -6,15 +9,18 @@ import (
 	"encoding/json"
 )
 
+// Item is one fault statement: asked as a Jev Noul, true when the fault is present.
 type Item struct {
 	ID        string `json:"id"`
-	Dimension string `json:"dimension"`
+	Dimension string `json:"dimension"` // "" for a finding outside the index (GC-02)
 	Severity  string `json:"severity"`
 	Fault     string `json:"fault"`
 }
 
+// Penalty per severity, deducted from the item's dimension.
 var Penalty = map[string]int{"low": 5, "medium": 12, "high": 25}
 
+// The general items, asked of every language's code.
 var general = []Item{
 	{"RD-01", "readability", "low", "a name hides what it holds or does"},
 	{"RD-02", "readability", "medium", "control flow needs re-reading to follow"},
@@ -72,11 +78,14 @@ var jsItems = []Item{
 	{"ID-JS-04", "idiomatic", "low", "var or an implicit global is used where a block-scoped binding was meant"},
 }
 
+// Configuration and markup languages are judged on readability and structure only.
 var configLangs = map[string]bool{"yaml": true, "json": true, "toml": true, "hcl": true, "cmake": true, "makefile": true,
 	"dockerfile": true, "html": true, "css": true, "scss": true, "protobuf": true, "graphql": true}
 
+// CatalogueName names the catalogue in every record and cache key.
 const CatalogueName = "general.v3"
 
+// CodeItems is the battery asked over a file's blanked code.
 func CodeItems(lang string) []Item {
 	if lang == "markdown" {
 		return nil
@@ -93,6 +102,8 @@ func CodeItems(lang string) []Item {
 	return append(append([]Item(nil), general...), addenda[lang]...)
 }
 
+// precision is the fixed calibration table of confirmed and reviewed findings.
+// Statements without an entry are reported as leads.
 var precision = map[string][2]int{
 	"EH-01": {36, 41}, "RD-03": {36, 43}, "ID-GO-01": {16, 21}, "ST-01": {15, 20}, "ST-02": {24, 33},
 	"EH-02": {25, 45}, "RD-01": {5, 9}, "EH-04": {7, 14}, "DF-02": {3, 7}, "EH-03": {5, 13},
@@ -100,13 +111,19 @@ var precision = map[string][2]int{
 	"ST-04": {1, 25},
 }
 
+// ReportMin is the measured precision, in percent, at which a statement's findings are reported
+// as findings; below it, or unmeasured, they are leads: kept, scored into the index as validated,
+// and marked for the reader to confirm.
 const ReportMin = 60
 
+// Lead reports whether findings of statement id are leads.
 func Lead(id string) bool {
 	p := precision[id]
 	return p[1] == 0 || 100*p[0] < ReportMin*p[1]
 }
 
+// MarkLeads marks each finding of the records that is a lead. Records are marked when reported,
+// so a scan judged before a statement was measured is reported by today's measurement.
 func MarkLeads(recs []Record) {
 	for i := range recs {
 		for k := range recs[i].Findings {
@@ -115,6 +132,8 @@ func MarkLeads(recs []Record) {
 	}
 }
 
+// Faults names each finding id with the statement it was asked as, so a report says what a
+// finding means and not only its code. An id the catalogue does not hold is left out.
 func Faults(ids []string) map[string]string {
 	all := append(append([]Item(nil), general...), docs...)
 	for _, items := range addenda {
@@ -133,8 +152,10 @@ func Faults(ids []string) map[string]string {
 	return out
 }
 
+// DocItems is the battery asked over a file's comment text (Markdown: its whole text).
 func DocItems() []Item { return docs }
 
+// Dimensions present for a language: the index is the mean over these.
 func Dimensions(lang string) []string {
 	switch {
 	case lang == "markdown":
@@ -149,6 +170,8 @@ func Dimensions(lang string) []string {
 	return d
 }
 
+// Questions renders a battery as Jev Noul questions over state[field]. An item whose construct
+// does not occur reads false, and the criteria say so.
 func Questions(items []Item, field string) map[string]any {
 	qs := make(map[string]any, len(items))
 	for _, it := range items {
@@ -164,6 +187,7 @@ func Questions(items []Item, field string) map[string]any {
 	return qs
 }
 
+// CatalogueDigest binds records and cache entries to the exact catalogue text.
 func CatalogueDigest() string {
 	b, _ := json.Marshal(map[string]any{"name": CatalogueName, "general": general, "docs": docs, "addenda": addenda})
 	h := sha256.Sum256(b)

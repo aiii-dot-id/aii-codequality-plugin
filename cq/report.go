@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 package cq
 
 import (
@@ -9,6 +12,7 @@ import (
 	"strings"
 )
 
+// ParseRecords reads a results file: one JSON record per line.
 func ParseRecords(b []byte) ([]Record, error) {
 	var out []Record
 	sc := bufio.NewScanner(bytes.NewReader(b))
@@ -26,6 +30,7 @@ func ParseRecords(b []byte) ([]Record, error) {
 	return out, sc.Err()
 }
 
+// FaultsOf is Faults for every finding the records carry.
 func FaultsOf(recs []Record) map[string]string {
 	var ids []string
 	for _, r := range recs {
@@ -36,6 +41,8 @@ func FaultsOf(recs []Record) map[string]string {
 	return Faults(ids)
 }
 
+// Summary aggregates a scan's records. Means are weighted by lines, so a large file counts for
+// more than a small one; worst lists the lowest-index chunks.
 func Summary(recs []Record, worst int) map[string]any {
 	bands := map[string]int{}
 	type agg struct{ lines, weighted, chunks int }
@@ -111,6 +118,8 @@ func Summary(recs []Record, worst int) map[string]any {
 
 var severityRank = map[string]int{"low": 0, "medium": 1, "high": 2}
 
+// Select returns the records under glob (see Match; "" or "." is every record) in language ("" is
+// any), each keeping only its findings at minSeverity or above; a record left with none is dropped.
 func Select(recs []Record, glob, minSeverity, language string) []Record {
 	var out []Record
 	for _, r := range recs {
@@ -131,13 +140,16 @@ func Select(recs []Record, glob, minSeverity, language string) []Record {
 	return out
 }
 
+// Match reports whether a file path is under a glob: path.Match within each segment, "**" for
+// any number of segments, and a glob that names a folder holds every file below it — so "**",
+// "internal/**" and "internal" all reach internal/plan/plan.go, and "*.go" only the top level.
 func Match(glob, ref string) bool {
 	glob = path.Clean(glob)
 	if glob == "." {
 		return true
 	}
 	parts := strings.Split(ref, "/")
-	at := make([]bool, len(parts)+1)
+	at := make([]bool, len(parts)+1) // at[j]: the glob so far matches parts[:j]
 	at[0] = true
 	for _, g := range strings.Split(glob, "/") {
 		next := make([]bool, len(parts)+1)
@@ -164,6 +176,8 @@ func Match(glob, ref string) bool {
 	return false
 }
 
+// Page returns the records from offset on until pageBytes of JSON is reached, and the offset to
+// continue from (-1 when there is no more).
 func Page(recs []Record, offset, pageBytes int) ([]Record, int) {
 	var out []Record
 	size := 0

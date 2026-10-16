@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 package cq
 
 import (
@@ -9,6 +12,7 @@ import (
 	"strings"
 )
 
+// Entry is one directory entry.
 type Entry struct {
 	Name    string `json:"n"`
 	Dir     bool   `json:"d,omitempty"`
@@ -16,14 +20,18 @@ type Entry struct {
 	Symlink bool   `json:"l,omitempty"`
 }
 
+// FS reads a tree: List one directory (truncated when it holds more entries than the reader
+// returns), Read one file of at most max bytes.
 type FS interface {
 	List(dir string) (entries []Entry, truncated bool, err error)
 	Read(file string, max int64) ([]byte, error)
 }
 
+// Scan is a resumable walk: everything a step needs to continue is in this value, which the
+// plugin stores between invokes.
 type Scan struct {
 	ID           string         `json:"id"`
-	Root         string         `json:"root"`
+	Root         string         `json:"root"` // the folder scanned, as the caller named it
 	Base         string         `json:"base"`
 	Stack        []string       `json:"stack"`
 	Dir          string         `json:"dir"`
@@ -35,7 +43,7 @@ type Scan struct {
 	IncludeTests bool           `json:"include_tests,omitempty"`
 	MaxFiles     int            `json:"max_files"`
 	MaxFileBytes int64          `json:"max_file_bytes"`
-	Status       string         `json:"status"`
+	Status       string         `json:"status"` // running | done | budget_exhausted | judge_unavailable
 	FilesSeen    int            `json:"files_seen"`
 	FilesJudged  int            `json:"files_judged"`
 	Chunks       int            `json:"chunks"`
@@ -43,10 +51,12 @@ type Scan struct {
 	CacheHits    int            `json:"cache_hits"`
 	Excluded     map[string]int `json:"excluded"`
 	LangCounts   map[string]int `json:"languages_judged"`
-	LastError    string         `json:"last_error,omitempty"`
-	Refused      []string       `json:"refused,omitempty"`
+	LastError    string         `json:"last_error,omitempty"` // why the last step stopped short; "" once a step ends cleanly
+	Refused      []string       `json:"refused,omitempty"`    // files the judge's service refused to take
 }
 
+// NewScan starts a walk of base inside the folder fs reads. The .gitignore and .gitattributes at
+// base are read once, here.
 func NewScan(fs FS, id, root, base string, exclude, languages []string, includeTests bool, maxFiles int, maxFileBytes int64) (*Scan, error) {
 	base = strings.Trim(path.Clean("/"+base), "/")
 	s := &Scan{ID: id, Root: root, Base: base, Stack: []string{base}, Exclude: exclude, Languages: languages,
@@ -60,7 +70,7 @@ func NewScan(fs FS, id, root, base string, exclude, languages []string, includeT
 	for name, dst := range map[string]*[]string{".gitignore": &s.Ignore, ".gitattributes": &s.Attrs} {
 		b, err := fs.Read(path.Join(base, name), 256<<10)
 		if err != nil {
-			continue
+			continue // absent or unreadable: no rules
 		}
 		for _, ln := range strings.Split(string(b), "\n") {
 			ln = strings.TrimSpace(ln)
@@ -98,6 +108,8 @@ func vendoredAttr(line string) string {
 	return parts[0]
 }
 
+// Step advances the walk until it has used maxCalls judge calls, examined maxFiles files in this
+// step, or finished. It returns the records of the files judged in this step.
 func (s *Scan) Step(t *Table, fs FS, j Judge, c Cache, maxCalls, maxExamined int) ([]Record, error) {
 	if s.Status != "running" && s.Status != "judge_unavailable" {
 		return nil, nil
@@ -138,7 +150,7 @@ func (s *Scan) Step(t *Table, fs FS, j Judge, c Cache, maxCalls, maxExamined int
 				s.Excluded["dir_listing_truncated"]++
 			}
 			if dir != s.Base && hasGit(entries) {
-				s.Excluded["nested_repository"]++
+				s.Excluded["nested_repository"]++ // another repository, as git itself treats it
 				continue
 			}
 			sort.Slice(entries, func(a, b int) bool { return entries[a].Name < entries[b].Name })
@@ -160,7 +172,7 @@ func (s *Scan) Step(t *Table, fs FS, j Judge, c Cache, maxCalls, maxExamined int
 					s.Pending = append(s.Pending, e)
 				}
 			}
-			for i := len(subdirs) - 1; i >= 0; i-- {
+			for i := len(subdirs) - 1; i >= 0; i-- { // lexical depth-first
 				s.Stack = append(s.Stack, subdirs[i])
 			}
 			continue
@@ -171,13 +183,13 @@ func (s *Scan) Step(t *Table, fs FS, j Judge, c Cache, maxCalls, maxExamined int
 		}
 		file := path.Join(s.Dir, e.Name)
 		examined++
-		recs, used, err := s.file(t, fs, j, c, e, file, ign, attrs, excl, maxCalls)
+		recs, used, err := s.file(t, fs, j, c, e, file, ign, attrs, excl)
 		calls += used
 		if err != nil {
 			if errors.Is(err, ErrJudge) {
 				s.Status = "judge_unavailable"
 				s.LastError = s.rel(file) + ": " + err.Error() + " — the next step retries this file"
-				return out, nil
+				return out, nil // the file stays pending
 			}
 			return out, err
 		}
@@ -231,7 +243,8 @@ func langDirExcluded(t *Table, only []string, name string) bool {
 	return false
 }
 
-func (s *Scan) file(t *Table, fs FS, j Judge, c Cache, e Entry, file string, ign, attrs, excl []rule, maxCalls int) ([]Record, int, error) {
+// file judges one file, or records why it was not judged. It returns the judge calls it used.
+func (s *Scan) file(t *Table, fs FS, j Judge, c Cache, e Entry, file string, ign, attrs, excl []rule) ([]Record, int, error) {
 	s.FilesSeen++
 	rel := s.rel(file)
 	name := e.Name
@@ -249,7 +262,9 @@ func (s *Scan) file(t *Table, fs FS, j Judge, c Cache, e Entry, file string, ign
 		return skip("gitattributes")
 	case matchRules(excl, rel, false):
 		return skip("caller_exclude")
-	case e.Size > s.MaxFileBytes || EstimatedCalls(e.Size) > maxCalls:
+	// A smaller retry budget limits calls, not file size. The judge keeps
+	// unfinished work pending; cached answers let later steps continue.
+	case e.Size > s.MaxFileBytes:
 		return skip("oversize")
 	}
 	raw, err := fs.Read(file, s.MaxFileBytes)
@@ -290,7 +305,7 @@ func (s *Scan) file(t *Table, fs FS, j Judge, c Cache, e Entry, file string, ign
 		return nil, used, nil
 	}
 	if err != nil {
-		s.FilesSeen--
+		s.FilesSeen-- // not seen until judged: the step that judges it counts it
 		return nil, used, err
 	}
 	s.FilesJudged++
@@ -303,6 +318,8 @@ func (s *Scan) file(t *Table, fs FS, j Judge, c Cache, e Entry, file string, ign
 	return recs, used, nil
 }
 
+// EstimatedCalls bounds the judge calls a file of size bytes can need: per chunk, the code call
+// and the location call, plus the comment call.
 func EstimatedCalls(size int64) int { return 2*(int(size/ChunkBytes)+1) + 1 }
 
 func minified(lang string, raw []byte) bool {
@@ -324,6 +341,7 @@ func contains(xs []string, x string) bool {
 	return false
 }
 
+// rule is one gitignore-syntax pattern.
 type rule struct {
 	neg, dirOnly bool
 	rx           *regexp.Regexp
@@ -343,6 +361,8 @@ func compileRules(lines []string) ([]rule, error) {
 	return out, nil
 }
 
+// matchRules applies gitignore semantics: the last matching rule wins; a directory-only rule
+// matches a file only through one of its parent directories.
 func matchRules(rules []rule, rel string, isDir bool) bool {
 	hit := false
 	for _, r := range rules {
@@ -364,6 +384,7 @@ func matchRules(rules []rule, rel string, isDir bool) bool {
 	return hit
 }
 
+// globRegexp converts one gitignore pattern to a regular expression over a slash path.
 func globRegexp(p string) (*regexp.Regexp, error) {
 	p = strings.TrimSuffix(p, "/")
 	anchored := strings.HasPrefix(p, "/") || strings.Contains(p, "/")

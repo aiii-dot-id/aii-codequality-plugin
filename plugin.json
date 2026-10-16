@@ -1,9 +1,9 @@
 {
   "id": "id.aiii.codequality",
-  "version": "0.1.10",
+  "version": "0.1.13",
   "aiios_min_version": "0.1.10",
   "plugin_family": "tool_bridge",
-  "publisher": "AIII",
+  "publisher": "AI Identity Incorporated",
   "title": "Code quality (Jev)",
   "description": "Measures source code quality with TypeSafe's Jev as the judge: a fixed catalogue of fault statements asked about each file's code and, separately, its comments; answers scored into findings, six dimension scores, an index and a band. Judges texts passed in, or scans a folder in the identity's sandbox a few files per call.",
   "license": "Apache-2.0",

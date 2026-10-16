@@ -1,3 +1,18 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
+// id.aiii.codequality — measures source code quality with Jev as the judge.
+//
+// judge  asks the catalogue about texts the caller passes in.
+// scan   walks a folder in the identity's sandbox, judging a few files per invoke; its place in
+//
+//	the walk and its results live in the plugin's private directory.
+//
+// report pages a scan's findings or summarises it.
+//
+// What the host requires of an install (AII OS 0.1.10): files, so scan reads the identity's
+// sandbox by the paths its own tools take; the host grant api.typesafe.ai:443 and Jev's key,
+// both given by pasting the key on the plugin's card.
 package main
 
 import (
@@ -18,12 +33,14 @@ const (
 	jevURL     = "https://api.typesafe.ai/v1/systemone"
 	jevModels  = "https://api.typesafe.ai/v1/models"
 	jevDefault = "jev-latest"
-
+	// Keep each step inside the host invoke wall. Normal steps plan twelve
+	// calls at two seconds each; a retry allows three calls at eight seconds
+	// each and resumes the pending file from its cached answers.
 	stepMS     = 24000
 	maxCallMS  = 8000
 	maxCalls   = 12
 	retryCalls = 3
-	readPage   = 512 << 10
+	readPage   = 512 << 10 // below the frame budget once base64-encoded
 	keepScans  = 8
 )
 
@@ -85,6 +102,7 @@ func init() {
 	p.Run()
 }
 
+// main never runs in the guest; on a host it prints the descriptors for 'aiisdk package'.
 func main() { sdk.MainDescribe() }
 
 var tbl *cq.Table
@@ -100,6 +118,10 @@ func table() (*cq.Table, error) {
 	return tbl, nil
 }
 
+// ---- the host bindings ------------------------------------------------------------------------
+
+// hostFS is a folder in the identity's sandbox, named as the identity's own tools name it;
+// the walk's paths are relative to it.
 type hostFS struct{ dir string }
 
 func (f hostFS) at(rel string) string {
@@ -146,13 +168,18 @@ func readAll(root, file string, max int64) ([]byte, error) {
 	}
 }
 
+// hostJudge asks Jev through the host. It makes at most the calls it was planned for, each
+// allowed an equal share of the step's time.
 type hostJudge struct {
 	handle, model string
 	timeout, left int
 }
 
+// errCallsSpent refuses a call past the ones planned. It is the judge's failure, so the scan keeps
+// the file pending and the next step goes on from the answers kept.
 var errCallsSpent = fmt.Errorf("%w: the calls this step planned are spent; the next step continues from the answers kept", cq.ErrJudge)
 
+// callMS is each call's timeout when a step plans calls of them.
 func callMS(calls int) int { return min(maxCallMS, stepMS/max(calls, 1)) }
 
 func (j *hostJudge) Model() string { return j.model }
@@ -173,6 +200,9 @@ func (j *hostJudge) Choose(state, questions map[string]any) (map[string]cq.Choic
 	return cq.ChoiceReply(status, body)
 }
 
+// post makes one call to Jev and returns its status and body. A call past the planned ones is not
+// made: its answer would land after the step's time, so it is left to the next step, which finds
+// the answers before it in the cache.
 func (j *hostJudge) post(state, questions map[string]any) (int, []byte, error) {
 	if j.left <= 0 {
 		return 0, nil, errCallsSpent
@@ -182,11 +212,12 @@ func (j *hostJudge) post(state, questions map[string]any) (int, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-
+	// A 4xx or 5xx comes back as the response AND an error (the SDK's contract): the status,
+	// not the error, says what happened. Only a denial, or no response at all, is the error's.
 	res, err := sdk.HTTP.Post(jevURL, &sdk.HTTPOptions{Body: string(body), ContentType: "application/json",
 		AuthProfile: j.handle, TimeoutMS: j.timeout})
 	if _, denied := sdk.AsDenied(err); denied {
-		return 0, nil, err
+		return 0, nil, err // a grant or profile is missing: not something a retry fixes
 	}
 	if err != nil && res.Status == 0 {
 		return 0, nil, fmt.Errorf("%w: no answer within the %d ms this call allowed: %v", cq.ErrJudge, j.timeout, err)
@@ -194,6 +225,8 @@ func (j *hostJudge) post(state, questions map[string]any) (int, []byte, error) {
 	return res.Status, responseBody(res), nil
 }
 
+// responseBody is a response's body as bytes: the host hands JSON over as JSON and anything else as a
+// string.
 func responseBody(res sdk.HTTPResult) []byte {
 	raw := []byte(res.Body)
 	var s string
@@ -203,6 +236,8 @@ func responseBody(res sdk.HTTPResult) []byte {
 	return raw
 }
 
+// hostCache keeps answers in 16 append-only shard files of the private directory, one JSON line
+// {"k": key, "a": answer} per entry.
 type hostCache struct {
 	shards map[string]map[string]json.RawMessage
 }
@@ -247,6 +282,8 @@ func (c *hostCache) Put(key string, a json.RawMessage) error {
 	return nil
 }
 
+// stepCalls is the Jev calls a step plans. A step after one that found Jev unavailable retries the
+// pending file alone, with longer calls: a call that went unanswered in 2 s is not asked again in 2 s.
 func stepCalls(s *cq.Scan) int {
 	if s.Status == "judge_unavailable" {
 		return retryCalls
@@ -254,6 +291,7 @@ func stepCalls(s *cq.Scan) int {
 	return maxCalls
 }
 
+// judgeFromSettings is the judge for an invoke that plans calls Jev calls.
 func judgeFromSettings(calls int) (*hostJudge, error) {
 	vals, err := sdk.Settings.Load()
 	if err != nil {
@@ -289,6 +327,8 @@ func failure(err error) (any, error) {
 	return nil, sdk.Fail("CODEQUALITY_FAILED", err.Error())
 }
 
+// named is every operation's one exit: the kit carries an error's words only when it is an
+// operation error, and drops the text of any other, so each error leaves here named.
 func named(fn func(sdk.Call) (any, error)) func(sdk.Call) (any, error) {
 	return func(c sdk.Call) (any, error) {
 		out, err := fn(c)
@@ -299,6 +339,10 @@ func named(fn func(sdk.Call) (any, error)) func(sdk.Call) (any, error) {
 	}
 }
 
+// ---- models -----------------------------------------------------------------------------------
+
+// models answers the host's question for the model setting's choices:
+// Jev's own list, read with the operator's key.
 func models(c sdk.Call) (any, error) {
 	j, err := judgeFromSettings(0)
 	if err != nil {
@@ -318,6 +362,8 @@ func models(c sdk.Call) (any, error) {
 	}
 	return map[string]any{"choices": choices}, nil
 }
+
+// ---- judge ------------------------------------------------------------------------------------
 
 func judge(c sdk.Call) (any, error) {
 	t, err := table()
@@ -369,6 +415,8 @@ func judge(c sdk.Call) (any, error) {
 	}
 	return map[string]any{"records": raw, "faults": cq.FaultsOf(recs)}, nil
 }
+
+// ---- scan -------------------------------------------------------------------------------------
 
 func statePath(id string) string   { return "scans/" + id + ".state.json" }
 func resultsPath(id string) string { return "scans/" + id + ".jsonl" }
@@ -515,6 +563,7 @@ func scanStart(c sdk.Call) (any, error) {
 	return scanView(s), nil
 }
 
+// pruneScans keeps the newest keepScans-1 scans, so the one being started makes keepScans.
 func pruneScans() error {
 	ids, err := scanIDs()
 	if err != nil {
@@ -534,7 +583,7 @@ func pruneScans() error {
 func scanIDs() ([]string, error) {
 	es, _, err := sdk.Files.List(sdk.PrivateRoot, "scans")
 	if err != nil {
-		return nil, nil
+		return nil, nil // no scans yet
 	}
 	var ids []string
 	for _, e := range es {
@@ -542,9 +591,11 @@ func scanIDs() ([]string, error) {
 			ids = append(ids, strings.TrimSuffix(e.Name, ".state.json"))
 		}
 	}
-	sort.Strings(ids)
+	sort.Strings(ids) // cq_<ms>: oldest first
 	return ids, nil
 }
+
+// ---- report -----------------------------------------------------------------------------------
 
 func report(c sdk.Call) (any, error) {
 	args := c.Args()
@@ -568,7 +619,7 @@ func report(c sdk.Call) (any, error) {
 	}
 	b, err := readAll(sdk.PrivateRoot, resultsPath(id), 48<<20)
 	if err != nil {
-		b = nil
+		b = nil // nothing judged yet
 	}
 	recs, err := cq.ParseRecords(b)
 	if err != nil {
@@ -603,11 +654,16 @@ func report(c sdk.Call) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	// A record's ref is relative to the folder scanned; root names it, so a reader opens the file
+	// without guessing where the scan began.
 	return map[string]any{"root": s.Root, "records": raw, "faults": cq.FaultsOf(page), "next_cursor": next,
 		"total_records": len(selected)}, nil
 }
 
+// recordsJSON encodes records for a result. The kit's result encoder takes maps, slices and
+// primitives but no struct, so a result carrying records hands them over already encoded, as
+// scan does for its results file. None encodes as an empty list; a record that cannot be
+// encoded fails the call, by name, rather than go missing from it.
 func recordsJSON(recs []cq.Record) (json.RawMessage, error) {
 	if len(recs) == 0 {
 		return json.RawMessage("[]"), nil

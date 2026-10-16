@@ -1,0 +1,20 @@
+{
+  "name": "scan start",
+  "operation": "scan",
+  "arguments": {
+    "action": "start",
+    "path": ".",
+    "scan_id": "fixture"
+  },
+  "expect": {
+    "status": "succeeded",
+    "result_contains": [
+      "\"scan_id\":\"fixture\"",
+      "\"status\":\"running\""
+    ]
+  },
+  "settings": {
+    "api_key": "jev"
+  },
+  "unconfirmed_by_design": "Scanning an explicitly supplied sandbox folder uses existing file and Jev grants; the identity may advance the scan without a separate operator confirmation for each step."
+}

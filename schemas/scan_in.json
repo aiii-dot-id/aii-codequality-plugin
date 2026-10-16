@@ -39,7 +39,7 @@
     },
     "include_tests": {
       "type": "boolean",
-      "description": "start: judge test files too (default false). In a large Go tree tests are often most of the files — over two thirds of AII OS's — and each file costs about two Jev calls, so include them when the tests themselves are what you want measured."
+      "description": "start: judge test files too (default false). Tests can be a large share of a source tree, and each file costs about two Jev calls, so include them when the tests themselves are what you want measured."
     },
     "max_files": {
       "type": "integer",

@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 package cq
 
 import (
@@ -7,12 +10,17 @@ import (
 
 var (
 	backtickStrings = map[string]bool{"go": true, "javascript": true, "typescript": true, "shell": true, "powershell": true}
-	noStrings       = map[string]bool{"markdown": true}
+	noStrings       = map[string]bool{"markdown": true} // prose: apostrophes are not quotes
 	charLiterals    = map[string]bool{"rust": true, "c": true, "cpp": true, "java": true, "go": true, "csharp": true,
 		"kotlin": true, "scala": true, "swift": true, "dart": true, "zig": true}
 	trailingSpace = regexp.MustCompile(`[ \t]+\n`)
 )
 
+// BlankComments removes the comments of text in language L, keeping every newline so line
+// numbers survive, and returns the blanked code and the comment text. It is string-aware for
+// ", ', ` and Python's triple quotes (which it treats as documentation). lostTrack is set when
+// the scan ends inside a string or block comment. inString marks, by line from 0, the lines that
+// begin inside a string: the body of a multi-line raw string, which is text and not code.
 func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bool, inString []bool) {
 	blocks := L.Blocks
 	pyTriple := L.Key == "python"
@@ -25,7 +33,7 @@ func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bo
 	var cm []string
 	inStr := ""
 	raw := false
-	var strNL []int
+	var strNL []int // offsets of the newlines inside strings
 	i := 0
 	for i < n {
 		c := text[i]
@@ -40,7 +48,7 @@ func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bo
 				continue
 			}
 			if c == '\n' && (inStr == `'` || inStr == `"`) && L.Key != "python" {
-				lostTrack = true
+				lostTrack = true // unterminated single-line string: resume on the next line
 				inStr = ""
 				out.WriteByte(c)
 				i++
@@ -115,7 +123,7 @@ func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bo
 					i += m
 					continue
 				}
-				out.WriteByte(c)
+				out.WriteByte(c) // a Rust lifetime ('a) and the like
 				i++
 				continue
 			}
@@ -136,11 +144,13 @@ func BlankComments(text string, L *Lang) (blanked, comments string, lostTrack bo
 	for _, off := range strNL {
 		line += strings.Count(text[from:off], "\n")
 		from = off
-		inString[line+1] = true
+		inString[line+1] = true // the line after this newline begins inside the string
 	}
 	return trailingSpace.ReplaceAllString(out.String(), "\n"), strings.Join(cm, "\n"), lostTrack, inString
 }
 
+// charLiteral returns the length of a character literal ('x', '\n', or two-byte forms) at the
+// start of s, or 0.
 func charLiteral(s string) int {
 	i := 1
 	for unit := 0; unit < 2; unit++ {
@@ -159,6 +169,7 @@ func charLiteral(s string) int {
 	return 0
 }
 
+// secretPatterns are replaced by <REDACTED> before any text leaves the machine.
 var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
 	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
@@ -169,6 +180,7 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._-]{24,}`),
 }
 
+// Redact replaces secrets with <REDACTED> and returns how many it replaced.
 func Redact(text string) (string, int) {
 	count := 0
 	for _, p := range secretPatterns {

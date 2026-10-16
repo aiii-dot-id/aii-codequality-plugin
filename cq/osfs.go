@@ -1,3 +1,6 @@
+// Copyright 2026 AIII AI Identity Incorporated <james@aiii.id>
+// SPDX-License-Identifier: Apache-2.0
+
 //go:build !wasm_unknown
 
 package cq
@@ -9,10 +12,12 @@ import (
 	"path/filepath"
 )
 
+// OSFS is the FS of a directory on the local disk, for tests. Paths are
+// slash-relative to Root; symlinks are reported, never followed.
 type OSFS struct {
 	Root     string
-	MaxList  int
-	Listings int
+	MaxList  int // entries per listing before truncation; 0 = 1024, as the host does
+	Listings int // directories listed, for measurements
 }
 
 func (f *OSFS) List(dir string) ([]Entry, bool, error) {
@@ -49,6 +54,7 @@ func (f *OSFS) Read(file string, max int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(h, max))
 }
 
+// MemCache is an in-memory Cache.
 type MemCache map[string]json.RawMessage
 
 func (m MemCache) Get(k string) (json.RawMessage, bool)  { a, ok := m[k]; return a, ok }

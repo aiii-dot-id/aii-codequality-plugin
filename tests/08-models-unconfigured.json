@@ -1,0 +1,9 @@
+{
+  "name": "models unconfigured",
+  "operation": "models",
+  "arguments": {},
+  "expect": {
+    "status": "failed",
+    "reason_code": "JUDGE_UNCONFIGURED"
+  }
+}
