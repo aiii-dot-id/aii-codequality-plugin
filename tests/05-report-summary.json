@@ -1,0 +1,14 @@
+{
+  "name": "report summary",
+  "operation": "report",
+  "arguments": {
+    "scan_id": "fixture"
+  },
+  "expect": {
+    "status": "succeeded",
+    "result_contains": [
+      "\"chunks_judged\":0",
+      "\"scan_id\":\"fixture\""
+    ]
+  }
+}

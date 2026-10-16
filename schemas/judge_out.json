@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "judge output",
+  "type": "object",
+  "properties": {
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "faults": {
+      "type": "object",
+      "description": "each finding id the records carry, with the fault it states"
+    }
+  },
+  "required": [
+    "records"
+  ]
+}
