@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "scan output",
+  "type": "object",
+  "properties": {
+    "scan_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "steps_left": {
+      "type": "integer",
+      "description": "about how many more steps the scan needs, while it is unfinished"
+    },
+    "progress": {
+      "type": "string",
+      "description": "what the scan still costs, while it is unfinished"
+    },
+    "sent_to": {
+      "type": "object",
+      "description": "where this step's texts were sent: the judge's backend and address"
+    }
+  },
+  "required": [
+    "scan_id",
+    "status"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "scan start",
+  "operation": "scan",
+  "arguments": {
+    "action": "start",
+    "path": ".",
+    "scan_id": "fixture"
+  },
+  "expect": {
+    "status": "succeeded",
+    "result_contains": [
+      "\"scan_id\":\"fixture\"",
+      "\"status\":\"running\""
+    ]
+  },
+  "settings": {
+    "api_key": "jev"
+  },
+  "unconfirmed_by_design": "Scanning an explicitly supplied sandbox folder sends its files to the judge the operator configured and granted: TypeSafe's hosted Jev at api.typesafe.ai, or a local judge on the operator's network; the scan advances by the identity's steps or on the host's schedule without a separate operator confirmation for each step."
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "judge input",
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "description": "The texts to judge, sent to the judge the operator set. One invoke makes at most the judge calls per step the operator set (twelve unless changed): per chunk of code, one to judge it and one to locate its findings, plus one for the comments.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "A name for the text, usually its path; its extension names the language when language is absent."
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 180000,
+            "description": "The source text. Each item must also fit max_file_bytes in UTF-8 bytes (128 KiB by default, at most 192 KiB); the character limit here does not replace that byte limit. Oversized input is refused before inference."
+          },
+          "language": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "description": "The language key (go, python, typescript, java, c, cpp, rust, …)."
+          }
+        },
+        "required": [
+          "ref",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "additionalProperties": false
+}

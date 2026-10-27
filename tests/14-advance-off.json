@@ -1,0 +1,16 @@
+{
+  "name": "advance off",
+  "operation": "advance",
+  "arguments": {},
+  "expect": {
+    "status": "succeeded",
+    "result_contains": [
+      "\"advanced\":\"\"",
+      "scheduled_steps is off"
+    ]
+  },
+  "settings": {
+    "api_key": "jev",
+    "scheduled_steps": false
+  }
+}

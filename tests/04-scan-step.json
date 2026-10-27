@@ -1,0 +1,7 @@
+{
+  "name": "scan preserves incomplete evidence when network is not granted",
+  "operation": "scan",
+  "arguments": {"action": "step", "scan_id": "fixture"},
+  "expect": {"status": "denied"},
+  "settings": {"api_key": "jev"}
+}

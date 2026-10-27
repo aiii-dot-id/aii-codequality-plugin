@@ -1,0 +1,19 @@
+{
+  "name": "judge local unconfigured",
+  "operation": "judge",
+  "arguments": {
+    "items": [
+      {
+        "ref": "a.go",
+        "text": "package a\n\nfunc A() int { return 1 }\n"
+      }
+    ]
+  },
+  "expect": {
+    "status": "failed",
+    "reason_code": "JUDGE_UNCONFIGURED"
+  },
+  "settings": {
+    "backend": "local"
+  }
+}

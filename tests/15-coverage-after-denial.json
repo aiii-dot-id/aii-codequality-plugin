@@ -1,0 +1,6 @@
+{
+  "name": "coverage names evidence missing after denied assessment",
+  "operation": "report",
+  "arguments": {"scan_id": "fixture", "shape": "coverage"},
+  "expect": {"status": "succeeded", "result_contains": ["battery_failed", "too_small", "\"assessment_complete\":false"]}
+}

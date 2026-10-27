@@ -1,0 +1,202 @@
+{
+  "id": "id.aiii.codequality",
+  "version": "0.1.14",
+  "aiios_min_version": "0.1.10",
+  "plugin_family": "tool_bridge",
+  "publisher": "AI Identity Incorporated",
+  "title": "Code quality (Jev)",
+  "description": "Proposes distinct files for contextual review using a fixed Jev-wire checklist, through TypeSafe or the operator's local endpoint. Bounded code and code/comment windows produce attributed allegations, explicit uncertainty and coverage gaps. Correctness and maintainability lanes are separate from legacy scores; unflagged files are not certified safe. Scans retain partial evidence and resume under a pinned model.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/aiii-dot-id/aii-codequality-plugin",
+  "interface": {
+    "id": "id.aiii.codequality.core",
+    "version": 1
+  },
+  "capability_envelope": [
+    "net.outbound:api.typesafe.ai:443",
+    "net.local",
+    "fs.sandbox",
+    "fs.private"
+  ],
+  "variants": [
+    {
+      "variant_id": "linux-x86_64-wasm",
+      "platform": "linux",
+      "arch": "x86_64",
+      "topology": "full_identity_host",
+      "execution_runtime": "wasm_component",
+      "admission_profile": "wasm_sandbox",
+      "variant_capabilities": [
+        "net.outbound:api.typesafe.ai:443",
+        "net.local",
+        "fs.sandbox",
+        "fs.private"
+      ]
+    },
+    {
+      "variant_id": "linux-arm64-wasm",
+      "platform": "linux",
+      "arch": "arm64",
+      "topology": "full_identity_host",
+      "execution_runtime": "wasm_component",
+      "admission_profile": "wasm_sandbox",
+      "variant_capabilities": [
+        "net.outbound:api.typesafe.ai:443",
+        "net.local",
+        "fs.sandbox",
+        "fs.private"
+      ]
+    },
+    {
+      "variant_id": "macos-arm64-wasm",
+      "platform": "macos",
+      "arch": "arm64",
+      "topology": "full_identity_host",
+      "execution_runtime": "wasm_component",
+      "admission_profile": "wasm_sandbox",
+      "variant_capabilities": [
+        "net.outbound:api.typesafe.ai:443",
+        "net.local",
+        "fs.sandbox",
+        "fs.private"
+      ]
+    },
+    {
+      "variant_id": "windows-x86_64-wasm",
+      "platform": "windows",
+      "arch": "x86_64",
+      "topology": "full_identity_host",
+      "execution_runtime": "wasm_component",
+      "admission_profile": "wasm_sandbox",
+      "variant_capabilities": [
+        "net.outbound:api.typesafe.ai:443",
+        "net.local",
+        "fs.sandbox",
+        "fs.private"
+      ]
+    }
+  ],
+  "settings": [
+    {
+      "key": "backend",
+      "type": "enum",
+      "title": "Judge",
+      "description": "where the texts are judged: TypeSafe's hosted Jev, or a judge you run on your own network that speaks Jev's wire",
+      "values": [
+        "jev",
+        "local"
+      ],
+      "labels": {
+        "jev": "TypeSafe's hosted Jev",
+        "local": "A judge on your own network"
+      },
+      "default": "jev"
+    },
+    {
+      "key": "api_key",
+      "type": "secret",
+      "title": "Jev API key",
+      "description": "TypeSafe's Jev key, for the hosted judge: paste it here; it is kept by AII OS and rides only to api.typesafe.ai. A local judge is sent no key"
+    },
+    {
+      "key": "local_judge_url",
+      "type": "string",
+      "title": "Local judge address",
+      "description": "for the local judge: its base address, http://<host>:<port>, under which it answers /v1/systemone and /v1/models; grant that address to this plugin as a local network address",
+      "default": ""
+    },
+    {
+      "key": "model",
+      "type": "string",
+      "title": "Model",
+      "description": "the model every request names; the list comes from the judge",
+      "default": "jev-latest",
+      "choices_from": "models"
+    },
+    {
+      "key": "step_ms",
+      "type": "integer",
+      "title": "Time per step, ms",
+      "description": "the most a step waits on the judge in all; keep it inside the host's limit on one call",
+      "default": 24000,
+      "minimum": 1000,
+      "maximum": 85000
+    },
+    {
+      "key": "max_call_ms",
+      "type": "integer",
+      "title": "Time per call, ms",
+      "description": "the most one judge call may take; a step's calls share its time and never get more than this",
+      "default": 8000,
+      "minimum": 500,
+      "maximum": 85000
+    },
+    {
+      "key": "max_calls_per_step",
+      "type": "integer",
+      "title": "Judge calls per step",
+      "description": "the judge calls one step or one judge request makes at most",
+      "default": 12,
+      "minimum": 1,
+      "maximum": 64
+    },
+    {
+      "key": "retry_calls",
+      "type": "integer",
+      "title": "Calls in a retry step",
+      "description": "the calls a step makes after one that found the judge unavailable, each given longer",
+      "default": 3,
+      "minimum": 1,
+      "maximum": 64
+    },
+    {
+      "key": "chunk_bytes",
+      "type": "integer",
+      "title": "Chunk size, bytes",
+      "description": "the most source text sent in one call; lower it for a judge with a smaller input limit. A scan keeps the size it started with",
+      "default": 29000,
+      "minimum": 2048,
+      "maximum": 131072
+    },
+    {
+      "key": "max_file_bytes",
+      "type": "integer",
+      "title": "File size cap, bytes",
+      "description": "Maximum raw source file bytes; larger files remain visible as coverage gaps. Requests use bounded contextual windows.",
+      "default": 131072,
+      "minimum": 1024,
+      "maximum": 196608
+    },
+    {
+      "key": "keep_scans",
+      "type": "integer",
+      "title": "Scans kept",
+      "description": "how many of the most recent scans are kept; starting one more removes the oldest",
+      "default": 8,
+      "minimum": 1,
+      "maximum": 256
+    },
+    {
+      "key": "cache_max_bytes",
+      "type": "integer",
+      "title": "Answer cache, bytes",
+      "description": "the most the answer cache keeps, in sixteen files; past its share a file keeps its newest answers",
+      "default": 33554432,
+      "minimum": 1048576,
+      "maximum": 268435456
+    },
+    {
+      "key": "scheduled_steps",
+      "type": "boolean",
+      "title": "Scans advance by themselves",
+      "description": "the host steps an unfinished scan every ten minutes, so it needs no call for every step; off, each step is a call",
+      "default": true
+    }
+  ],
+  "schedule": [
+    {
+      "operation": "advance",
+      "every_seconds": 600
+    }
+  ]
+}

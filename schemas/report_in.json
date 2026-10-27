@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "report input",
+  "type": "object",
+  "properties": {
+    "scan_id": {"type": "string", "maxLength": 64, "description": "The scan to report; absent lists scans."},
+    "shape": {"type": "string", "enum": ["summary", "findings", "review_queue", "coverage"], "description": "review_queue: distinct files with allegations and evidence; coverage: unknown, partial and excluded paths. summary retains legacy chunk scores; findings pages chunk evidence."},
+    "worst": {"type": "integer", "minimum": 1, "maximum": 100, "description": "summary: how many lowest-index legacy chunks to list (default 10), not distinct files."},
+    "cursor": {"type": "integer", "minimum": 0, "description": "findings: next_cursor of the previous page."},
+    "page_bytes": {"type": "integer", "minimum": 4096, "maximum": 200000, "description": "Maximum bytes of page entries (default 131072); metadata is additional."},
+    "min_severity": {"type": "string", "enum": ["low", "medium", "high"], "description": "findings: leave out findings below this severity."},
+    "language": {"type": "string", "minLength": 1, "maxLength": 32, "description": "findings: one language only."},
+    "path": {"type": "string", "maxLength": 512, "description": "findings: a folder or glob; * within a name, ** for any depth. Dot or absent is every file."},
+    "lane": {"type": "string", "enum": ["correctness", "maintainability"], "description": "review_queue: one concern lane; absent combines both, correctness first. Ordering is an unvalidated candidate."},
+    "page_cursor": {"type": "string", "maxLength": 2048, "description": "review_queue or coverage: opaque next_page_cursor; changed evidence or query requires a fresh first page."},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "review_queue or coverage: maximum entries per page, default 20."}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "judge output",
+  "type": "object",
+  "properties": {
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "faults": {
+      "type": "object",
+      "description": "each finding id the records carry, with the fault it states"
+    },
+    "sent_to": {
+      "type": "object",
+      "description": "where the texts were sent: the judge's backend and address"
+    }
+  },
+  "required": [
+    "records"
+  ]
+}

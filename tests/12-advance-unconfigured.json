@@ -1,0 +1,10 @@
+{
+  "name": "advance steps the unfinished scan",
+  "operation": "advance",
+  "arguments": {},
+  "expect": {
+    "status": "failed",
+    "reason_code": "JUDGE_UNCONFIGURED"
+  },
+  "unconfirmed_by_design": "The host's scheduled step continues a scan the identity started, sending its files to the judge the operator configured and granted: TypeSafe's hosted Jev at api.typesafe.ai, or a local judge on the operator's network; it waits for no operator, as every scheduled operation does."
+}
