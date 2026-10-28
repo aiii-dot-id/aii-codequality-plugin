@@ -90,8 +90,11 @@ func TestEveryErrorLeavesNamed(t *testing.T) {
 		code string
 	}{
 		{fmt.Errorf("%w: the judge answered 503", cq.ErrJudge), "JUDGE_UNAVAILABLE"},
-		{fmt.Errorf("%w (401): paste a key", cq.ErrKey), "JUDGE_KEY_REFUSED"},
-		{fmt.Errorf("%w: the judge answered 400", cq.ErrRefused), "JUDGE_REFUSED_TEXT"},
+		{cq.ClassifyHTTPFailure(401, "", nil, nil), "JUDGE_AUTHENTICATION_REQUIRED"},
+		{cq.ClassifyHTTPFailure(403, "", []byte(`<html>`), nil), "JUDGE_REFUSED"},
+		{cq.ClassifyHTTPFailure(400, "", nil, nil), "JUDGE_REQUEST_VALIDATION"},
+		{fmt.Errorf("%w; %w", cq.ClassifyHTTPFailure(503, "", nil, nil), cq.ErrRetryExhausted), "JUDGE_UNAVAILABLE"},
+		{cq.ClassifyHTTPFailure(429, "", nil, nil), "JUDGE_UNAVAILABLE"},
 		{errors.New("state file unreadable"), "CODEQUALITY_FAILED"},
 		{sdk.Fail("SCAN_EXISTS", "a scan named x exists"), "SCAN_EXISTS"},
 	} {
@@ -253,13 +256,17 @@ func TestOneWireTwoAddresses(t *testing.T) {
 	for _, tc := range []struct {
 		v              values
 		url, auth, who string
+		sent           []string // the model each request names: an alias until its first reply pins it
 	}{
-		{values{"api_key": "jev"}, "https://api.typesafe.ai/v1/systemone", "jev", "api.typesafe.ai"},
-		{values{"backend": "local", "local_judge_url": "http://judge.lan:8080", "api_key": "jev"}, "http://judge.lan:8080/v1/systemone", "", "judge.lan:8080"},
+		{values{"api_key": "jev"}, "https://api.typesafe.ai/v1/systemone", "jev", "api.typesafe.ai", []string{"jev-latest", "jev-1.13.0"}},
+		{values{"backend": "local", "local_judge_url": "http://judge.lan:8080", "api_key": "jev", "model": "jev-1.13.0"}, "http://judge.lan:8080/v1/systemone", "", "judge.lan:8080", []string{"jev-1.13.0", "jev-1.13.0"}},
 	} {
 		c := mustConfig(t, tc.v)
-		j, err := newJudge(c, 2, cq.LoadMemo(nil))
+		j, err := newJudge(c, 2)
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err = j.bindInvocation(c, 1000); err != nil {
 			t.Fatal(err)
 		}
 		tr := &capture{model: "jev-1.13.0"}
@@ -276,7 +283,7 @@ func TestOneWireTwoAddresses(t *testing.T) {
 		for i, u := range tr.urls {
 			var sent map[string]json.RawMessage
 			if u != tc.url || tr.opts[i].AuthProfile != tc.auth || json.Unmarshal([]byte(tr.opts[i].Body), &sent) != nil ||
-				len(sent) != 3 || string(sent["model"]) != `"jev-latest"` {
+				len(sent) != 3 || string(sent["model"]) != `"`+tc.sent[i]+`"` {
 				t.Fatalf("%v: sent %s with key %q: %s", tc.v, u, tr.opts[i].AuthProfile, tr.opts[i].Body)
 			}
 		}
@@ -284,26 +291,29 @@ func TestOneWireTwoAddresses(t *testing.T) {
 			t.Fatalf("%v: the result names %v as where the text went", tc.v, got)
 		}
 	}
-	if _, err := newJudge(mustConfig(t, values{}), 1, nil); reasonOf(err) != "JUDGE_UNCONFIGURED" {
+	if _, err := newJudge(mustConfig(t, values{}), 1); reasonOf(err) != "JUDGE_UNCONFIGURED" {
 		t.Fatalf("hosted judge without a key: %v", err)
 	}
-	if _, err := newJudge(mustConfig(t, values{"backend": "local", "api_key": "jev"}), 1, nil); reasonOf(err) != "JUDGE_UNCONFIGURED" {
+	if _, err := newJudge(mustConfig(t, values{"backend": "local", "api_key": "jev"}), 1); reasonOf(err) != "JUDGE_UNCONFIGURED" {
 		t.Fatalf("local judge without an address: %v", err)
 	}
 }
 
 // The model a reply names is the model recorded and the model its answers are kept under
-// (OP-CQ-5): behind an alias, answers of a model the alias has moved off are asked again, not
-// reused; and two judges that use one model name never share answers.
+// (OP-CQ-5), through the production binding each invocation makes: an alias is asked fresh
+// until its first reply pins the concrete model, answers of a model the alias has moved off are
+// asked again, not reused, and two judges that use one model name never share answers.
 func TestTheRepliedModelIsRecordedAndKeysTheCache(t *testing.T) {
 	tb := tableT(t)
 	cache := cq.MemCache{}
-	memo := cq.LoadMemo(nil)
 	hosted := mustConfig(t, values{"api_key": "jev"})
-	ask := func(c config, model, text, backend string, wantCalls, wantCached int) {
+	ask := func(c config, model, text string, wantCalls, wantCached int) {
 		t.Helper()
-		j, err := newJudge(c, 3, memo)
+		j, err := newJudge(c, 3)
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err = j.bindInvocation(c, 1000); err != nil {
 			t.Fatal(err)
 		}
 		tr := &capture{model: model}
@@ -314,26 +324,23 @@ func TestTheRepliedModelIsRecordedAndKeysTheCache(t *testing.T) {
 		}
 		calls, cached := 0, 0
 		for _, r := range recs {
-			if r.Model != model || r.Backend != backend {
-				t.Fatalf("battery %s recorded model %q backend %q, want %q %q", r.Battery, r.Model, r.Backend, model, backend)
+			if r.Model != model || r.Backend != j.Backend() {
+				t.Fatalf("battery %s recorded model %q backend %q, want %q %q", r.Battery, r.Model, r.Backend, model, j.Backend())
 			}
 			calls += r.Calls
 			cached += r.Cached
 		}
 		if calls != wantCalls || len(tr.urls) != wantCalls || cached != wantCached {
-			t.Fatalf("%s %s: calls %d (sent %d), cached %d; want %d, %d", backend, model, calls, len(tr.urls), cached, wantCalls, wantCached)
+			t.Fatalf("%s %s: calls %d (sent %d), cached %d; want %d, %d", j.Backend(), model, calls, len(tr.urls), cached, wantCalls, wantCached)
 		}
 	}
-	ask(hosted, "jev-1.13.0", goSource, "jev", 2, 0)
-	if b, ok := memo.Changed(); !ok || !strings.Contains(string(b), "jev-1.13.0") {
-		t.Fatal("the replied model is remembered for the next invocation")
-	}
-	ask(hosted, "jev-1.13.0", goSource, "jev", 0, 2)
+	ask(hosted, "jev-1.13.0", goSource, 2, 0)
+	ask(hosted, "jev-1.13.0", goSource, 1, 1) // the alias is asked fresh; the pinned model's docs answer is kept
 	other := strings.Replace(goSource, "Add", "Sum", -1)
-	ask(hosted, "jev-1.14.0", other, "jev", 2, 0)
-	ask(hosted, "jev-1.14.0", goSource, "jev", 2, 0)
-	local := mustConfig(t, values{"backend": "local", "local_judge_url": "http://judge.lan:8080"})
-	ask(local, "jev-1.14.0", goSource, "local judge.lan:8080", 2, 0)
+	ask(hosted, "jev-1.14.0", other, 2, 0)
+	ask(hosted, "jev-1.14.0", goSource, 2, 0) // the alias moved: 1.13.0's answers are not reused
+	local := mustConfig(t, values{"backend": "local", "local_judge_url": "http://judge.lan:8080", "model": "jev-1.14.0"})
+	ask(local, "jev-1.14.0", goSource, 2, 0)
 }
 
 // Each write.external summary names where the text goes (OP-CQ-3), and fits the host's 256
@@ -435,4 +442,28 @@ func TestTheLocalJudgeIsReachedUnderNetLocal(t *testing.T) {
 	if !has(caps, netLocal) {
 		t.Fatal("judge, scan and advance do not declare net.local")
 	}
+}
+
+// The retry budget is the operator's, defaulting to 0.1.14's eight, held to its range.
+func TestRetryBudgetIsASetting(t *testing.T) {
+	if c := mustConfig(t, values{}); c.retryBudget() != 8 {
+		t.Fatalf("default: %d", c.retryBudget())
+	}
+	if c := mustConfig(t, values{"retry_budget": 0}); c.retryBudget() != 0 {
+		t.Fatalf("operator's value: %d", c.retryBudget())
+	}
+	for _, v := range []values{{"retry_budget": -1}, {"retry_budget": 33}} {
+		if _, err := configFrom(v); reasonOf(err) != "JUDGE_CONFIGURATION_INVALID" {
+			t.Fatalf("%v accepted: %v", v, err)
+		}
+	}
+}
+
+// defaultInts is every integer setting at its declared default, as configFrom reads an empty card.
+func defaultInts() map[string]int64 {
+	m := map[string]int64{}
+	for _, b := range bounds {
+		m[b.key] = b.def
+	}
+	return m
 }

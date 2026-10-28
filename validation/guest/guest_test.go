@@ -51,6 +51,7 @@ type broker struct {
 	submitted                                             map[string]int
 	maxFileBytes                                          int
 	failDocs                                              bool
+	refuseMarker                                          string
 	source, baseURL, configuredModel, responseModel       string
 	nowMS                                                 int64
 	maxEscaping, sourceReads                              int
@@ -130,6 +131,9 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 			b.docsCalls++
 		} else {
 			b.codeCalls++
+		}
+		if b.refuseMarker != "" && strings.Contains(state, b.refuseMarker) {
+			return raw(object{"status": "failed", "reasonCode": "NET_REMOTE_OUTCOME_FAILED", "operation_result": object{"http_status": 403, "body": "<html>Attention Required</html>"}}), nil
 		}
 		if docs && b.failDocs {
 			return raw(object{"status": "failed", "reasonCode": "NET_REMOTE_OUTCOME_FAILED", "operation_result": object{"http_status": 503, "retry_after_s": 120, "body": object{"error": "injected docs failure"}}}), nil

@@ -1,0 +1,2 @@
+shells/android/gradlew.bat -whitespace
+shells/android/gradlew.bat text eol=crlf

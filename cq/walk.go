@@ -81,25 +81,6 @@ func NewScan(fs FS, id, root, base string, exclude, languages []string, includeT
 	return s, nil
 }
 
-func vendoredAttr(line string) string {
-	parts := strings.Fields(line)
-	if len(parts) < 2 {
-		return ""
-	}
-	marked := false
-	for _, a := range parts[1:] {
-		switch a {
-		case "linguist-vendored", "linguist-generated", "linguist-documentation",
-			"linguist-vendored=true", "linguist-generated=true", "linguist-documentation=true":
-			marked = true
-		}
-	}
-	if !marked {
-		return ""
-	}
-	return parts[0]
-}
-
 func (s *Scan) Step(t *Table, fs FS, j Judge, c Cache, maxCalls, maxExamined int) ([]Record, error) {
 	if s.Status != "running" && s.Status != "judge_unavailable" {
 		return nil, nil
@@ -293,7 +274,7 @@ func (s *Scan) scopeBoundary(scope walkScope, cause error) error {
 		return errors.Join(cause, err)
 	}
 	if cause != nil {
-		s.LastError = scope.ref + ": " + cause.Error() + " — rules must validate before retry"
+		s.LastError = scope.ref + ": " + cause.Error() + rulesRetry
 		return cause
 	}
 	s.Excluded[scope.reason]++
@@ -417,7 +398,7 @@ func (s *Scan) file(t *Table, fs FS, j Judge, c Cache, e Entry, file string, ign
 		return skip("global_file")
 	case matchRules(ign, rel, false):
 		return skip("gitignore")
-	case matchRules(attrs, rel, false):
+	case matchAttrs(attrs, rel):
 		return skip("gitattributes")
 	case matchRules(excl, rel, false):
 		return skip("caller_exclude")
@@ -509,6 +490,11 @@ func (s *Scan) file(t *Table, fs FS, j Judge, c Cache, e Entry, file string, ign
 	for n := range incomplete {
 		delete(completed, n)
 	}
+	if errors.Is(err, ErrKey) {
+
+		s.FilesSeen--
+		return recs, used, err
+	}
 	cov := Coverage{Ref: rel, SourceDigest: digest, Kind: "file", Disposition: "complete", Reasons: []string{}, Size: e.Size, ExpectedChunks: expected, CompletedChunks: len(completed)}
 	if err != nil {
 		cov.Disposition = "pending"
@@ -574,6 +560,7 @@ func contains(xs []string, x string) bool {
 type rule struct {
 	neg, dirOnly bool
 	rx           *regexp.Regexp
+	attr         string
 }
 
 func compileRules(lines []string) ([]rule, error) {
@@ -611,6 +598,21 @@ func matchRules(rules []rule, rel string, isDir bool) bool {
 	return hit
 }
 
+func matchAttrs(attrs []rule, rel string) bool {
+	set := map[string]bool{}
+	for _, r := range attrs {
+		if r.rx.MatchString(rel) {
+			set[r.attr] = !r.neg
+		}
+	}
+	for _, on := range set {
+		if on {
+			return true
+		}
+	}
+	return false
+}
+
 func globRegexp(p string) (*regexp.Regexp, error) {
 	p = strings.TrimSuffix(p, "/")
 	anchored := strings.HasPrefix(p, "/") || strings.Contains(p, "/")
@@ -635,7 +637,12 @@ func globRegexp(p string) (*regexp.Regexp, error) {
 			b.WriteString("[^/]")
 		case p[i] == '[':
 			if j := strings.IndexByte(p[i:], ']'); j > 0 {
-				b.WriteString(p[i : i+j+1])
+
+				class := p[i+1 : i+j]
+				if strings.HasPrefix(class, "!") || strings.HasPrefix(class, "^") {
+					class = "^/" + class[1:]
+				}
+				b.WriteString("[" + class + "]")
 				i += j
 			} else {
 				b.WriteString(`\[`)

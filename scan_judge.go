@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/aiii-dot-id/aii-codequality-plugin/cq"
+	sdk "github.com/aiii-dot-id/aii-plugin-sdk/pkg/aiiosdk"
 )
 
 type scanRequestState struct {
@@ -46,12 +48,13 @@ func (j *hostJudge) bindScan(cfg config, s *cq.Scan, nowMS int64) error {
 		return err
 	}
 	if nowMS <= 0 {
-		return fmt.Errorf("host clock required for persistent request backoff")
+		return sdk.Fail("HOST_CLOCK_UNAVAILABLE", hostClockMissing)
 	}
 	j.runtime = &state
 	j.nowMS = nowMS
 
-	j.retryBaseMS = nowMS + int64(cfg.stepMS()) + 6000
+	j.retryBaseMS = nowMS + int64(cfg.stepMS()) + invokeSlackMS
+	j.retryBudget = uint32(cfg.retryBudget())
 
 	cursorBytes, err := json.Marshal(s)
 	if err != nil {
@@ -93,16 +96,13 @@ func (j *hostJudge) bindScan(cfg config, s *cq.Scan, nowMS int64) error {
 
 func (j *hostJudge) CacheEligible() bool {
 	if j.runtime == nil {
-		return true
+		return false
 	}
 	_, ok := j.runtime.Pin.CacheModel()
 	return ok && j.runtime.Blocked == ""
 }
 
 func (j *hostJudge) beforeScanRequest(body []byte) error {
-	if j.runtime == nil {
-		return nil
-	}
 	if j.runtime.Blocked != "" {
 		return fmt.Errorf("scan request blocked: %s", j.runtime.Blocked)
 	}
@@ -122,28 +122,23 @@ func (j *hostJudge) beforeScanRequest(body []byte) error {
 }
 
 func (j *hostJudge) scanResponse(status int, raw []byte, retryAfter *int64) error {
-	if j.runtime == nil {
-		return nil
-	}
-	if failure := cq.ClassifyHTTPFailure(status, "", retryAfter); failure != nil {
-		if j.optional && !failure.Retryable() && failure.Reason != cq.RequestAuthentication {
-
+	if failure := cq.ClassifyHTTPFailure(status, "", raw, retryAfter); failure != nil {
+		if !failure.Retryable() {
 			return failure
 		}
-		if failure.Retryable() {
-			next, err := j.runtime.Retry.Next(failure, j.retryBaseMS)
-			if err != nil {
-				j.runtime.Blocked = err.Error()
-			} else {
-				j.runtime.Retry = next
-			}
-		} else {
-			j.runtime.Blocked = string(failure.Reason)
+		var cause error = failure
+		next, err := j.runtime.Retry.Next(failure, j.retryBaseMS, j.retryBudget)
+		switch {
+		case errors.Is(err, cq.ErrRetryExhausted):
+			next, cause = cq.RequestRetry{}, fmt.Errorf("%w; %w", failure, err)
+		case err != nil:
+			j.runtime.Blocked = err.Error()
 		}
+		j.runtime.Retry = next
 		if err := j.persistRuntime(); err != nil {
 			return fmt.Errorf("%w: %w", cq.ErrProgress, err)
 		}
-		return failure
+		return cause
 	}
 	pin, err := j.runtime.Pin.WithResponse(raw)
 	if err != nil {

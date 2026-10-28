@@ -9,8 +9,8 @@ import (
 	"fmt"
 )
 
-var ErrStaleCursor = errors.New("review cursor belongs to different scan evidence or query; restart at the first page")
-var ErrReviewEntryTooLarge = errors.New("one file review exceeds page_bytes; use a larger page or findings shape for its individual chunk evidence")
+var ErrStaleCursor = errors.New(staleCursor)
+var ErrReviewEntryTooLarge = errors.New(reviewEntryTooLarge)
 
 type reviewCursor struct {
 	Generation string `json:"generation"`
@@ -51,7 +51,7 @@ func PageReview(report ReviewReport, generation, shape, lane, cursor string, pag
 		return out, fmt.Errorf("unknown review lane %q", lane)
 	}
 	if pageBytes < 4096 || pageBytes > 200000 || limit < 1 || limit > 100 {
-		return out, errors.New("page_bytes must be 4096..200000 and limit 1..100")
+		return out, errors.New(pageBoundsInvalid)
 	}
 	offset := 0
 	if cursor != "" {
@@ -74,7 +74,7 @@ func PageReview(report ReviewReport, generation, shape, lane, cursor string, pag
 	size := 2
 	next := offset
 	for next < total && len(rows) < limit {
-		var entry any = report.Files
+		var entry any
 		if shape == "coverage" {
 			entry = report.Gaps[next]
 		} else {

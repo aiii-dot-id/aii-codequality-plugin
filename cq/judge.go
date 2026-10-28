@@ -34,42 +34,6 @@ var ErrJudge = errors.New("judge unavailable")
 
 var ErrRefused = errors.New("judge refused this text")
 
-func JudgeReply(status int, body []byte) (map[string]float64, error) {
-	if err := replyError(status, body); err != nil {
-		return nil, err
-	}
-	return ParseAnswers(body)
-}
-
-func ChoiceReply(status int, body []byte) (map[string]Choice, error) {
-	if err := replyError(status, body); err != nil {
-		return nil, err
-	}
-	return ParseChoices(body)
-}
-
-const (
-	judgeAnswered = "the judge answered %d"
-
-	keyRefused = "(%d): paste a key that works on the plugin's card"
-
-	pageRefused = "the judge answered 403 with a page, not JSON"
-)
-
-func replyError(status int, body []byte) error {
-	switch {
-	case status == 200:
-		return nil
-	case status == 0 || status == 429 || status >= 500:
-		return fmt.Errorf("%w: "+judgeAnswered, ErrJudge, status)
-	case status == 401 || status == 403 && json.Valid(body):
-		return fmt.Errorf("%w "+keyRefused, ErrKey, status)
-	case status == 403:
-		return fmt.Errorf("%w: "+pageRefused, ErrRefused)
-	}
-	return fmt.Errorf("%w: "+judgeAnswered+": %.200s", ErrRefused, status, body)
-}
-
 var ErrKey = errors.New("the judge refused the key")
 
 const (
@@ -289,11 +253,11 @@ func locate(j Judge, c Cache, lang, backend string, ch Chunk, inString []bool, f
 		state[u.Key] = u.Text
 		options[u.Key] = "the unit " + u.Key
 	}
-	options["cannot_localize"] = "No valid single unit: the alleged fault is absent, distributed across units, or the evidence is insufficient."
+	options["cannot_localize"] = locateNone
 	questions := map[string]any{}
 	for _, id := range ids {
 		questions[id] = map[string]any{"type": "choice", "criteria": options,
-			"instructions": "In `units`: which single unit contains the place where " + code[id] + "? Choose cannot_localize if none is justified; selecting a location does not verify the fault."}
+			"instructions": fmt.Sprintf(locateQuestion, code[id])}
 	}
 	keys := make([]string, len(units))
 	for i, u := range units {

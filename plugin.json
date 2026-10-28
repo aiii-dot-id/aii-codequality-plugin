@@ -1,6 +1,6 @@
 {
   "id": "id.aiii.codequality",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "aiios_min_version": "0.1.10",
   "plugin_family": "tool_bridge",
   "publisher": "AI Identity Incorporated",
@@ -184,6 +184,15 @@
       "default": 33554432,
       "minimum": 1048576,
       "maximum": 268435456
+    },
+    {
+      "key": "retry_budget",
+      "type": "integer",
+      "title": "Retries while the judge is unavailable",
+      "description": "retries of an unavailable judge, each wait twice the last up to five minutes, before the waits start again; an outage alone does not end a scan, but a request to wait over a day blocks it. 0 retries at every step",
+      "default": 8,
+      "minimum": 0,
+      "maximum": 32
     },
     {
       "key": "scheduled_steps",

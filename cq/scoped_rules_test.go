@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -121,7 +123,7 @@ func TestScopedRulesAttributesAndGlobGrammar(t *testing.T) {
 		"doc.md": false, "pkg[1]/deep/doc.md": false, "pkg1/doc.md": false,
 		"pkg[1]/local": true, "pkg[1]/local/child.go": false,
 	} {
-		if got := matchRules(attrs, name, false); got != want {
+		if got := matchAttrs(attrs, name); got != want {
 			t.Errorf("attribute %q = %v, want %v", name, got, want)
 		}
 	}
@@ -197,11 +199,12 @@ func TestScopedRulesExactAggregateBudgetAndAbsentFiles(t *testing.T) {
 
 func TestScopedRulesRefuseUnsupportedGrammar(t *testing.T) {
 	for _, attr := range []bool{false, true} {
-		lines := []string{"!", "/", "[z-a]", "[abc]", "\\#literal", "name\\ with-space", "a/**b", "a/***/b", "a//b", "../secret", "a/./b", " name", "two words", "\"quoted\"", "é.go", "bad\x00name"}
+		lines := []string{"!", "/", "[z-a]", "[]", "[!]", "a[b/c]d", "[[:alpha:]]", "a]b", "[ab", "\\#literal", "name\\ with-space", "a/**b", "a/***/b", "a//b", "../secret", "a/./b", "\"quoted\"", "é.go", "bad\x00name", "tab\tname"}
 		name := ".gitignore"
 		if attr {
+
 			name = ".gitattributes"
-			lines = []string{"*.go", "*.go linguist-vendored=false", "*.go -linguist-vendored", "*.go !linguist-vendored", "*.go text=auto", "[attr]vendor linguist-vendored", "!*.go linguist-vendored", "dir/ linguist-vendored", "*.go linguist-vendored custom-macro", " *.go linguist-vendored"}
+			lines = []string{"*.go linguist-vendored=yes", "*.go -linguist-vendored=true", "*.go linguist-unknown", "[attr]vendor linguist-vendored", "[attr]docs -linguist-documentation", "!*.go linguist-vendored", "dir/ linguist-vendored", "\"a b\" linguist-vendored", "é.go linguist-generated", "a/**b linguist-generated", "[z-a] linguist-vendored"}
 		}
 		for _, line := range lines {
 			t.Run(name+"/"+line, func(t *testing.T) {
@@ -220,6 +223,113 @@ func TestScopedRulesRejectPathsOutsideBaseBeforeIO(t *testing.T) {
 		f := &scopedRulesFS{}
 		if _, _, err := scopedRules(f, paths[0], paths[1]); err == nil || len(f.lists) != 0 || len(f.reads) != 0 {
 			t.Fatalf("paths %v: err=%v lists=%v reads=%v", paths, err, f.lists, f.reads)
+		}
+	}
+}
+
+func TestScopedRulesIgnoreAttributesWithoutExclusionMeaning(t *testing.T) {
+	bodies := map[string]string{
+		"extra": "* -text\n*.patch whitespace=-blank-at-eol\n*.png binary\n*.bin -diff -merge\n" +
+			"[attr]crlf text eol=crlf\n*.bat crlf\n*.go\ndir/ -text\n!neg -text\n\"a b\" text\n" +
+			"*.psd filter=lfs diff=lfs merge=lfs -text\n*.c linguist-language=C\ndocs/** linguist-detectable\n" +
+			"*.md -linguist-detectable\n  *.txt text=auto\n",
+	}
+	for _, fixture := range []string{"aii-os.gitattributes", "aii-plugin-sdk.gitattributes"} {
+		raw, err := os.ReadFile(filepath.Join("testdata", "rules", fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies[fixture] = string(raw)
+	}
+	for name, body := range bodies {
+		f := &scopedRulesFS{dirs: map[string][]Entry{"": {{Name: ".gitattributes"}}}, files: map[string]string{".gitattributes": body}}
+		ign, attrs, err := scopedRules(f, "", "")
+		if err != nil || len(ign) != 0 || len(attrs) != 0 {
+			t.Fatalf("%s: attributes without exclusion meaning: ign=%v attrs=%v err=%v", name, ign, attrs, err)
+		}
+	}
+}
+
+func TestScopedRulesLinguistAttributesResolvePerName(t *testing.T) {
+	f := &scopedRulesFS{dirs: map[string][]Entry{"": {{Name: ".gitattributes"}}}, files: map[string]string{".gitattributes": "" +
+		"vendor/** linguist-vendored -diff\n" +
+		"vendor/keep.go -linguist-vendored\n" +
+		"gen/** linguist-generated=true\n" +
+		"gen/*.go linguist-vendored=false\n" +
+		"docs/** linguist-documentation\n" +
+		"docs/api.md !linguist-documentation\n" +
+		"*.pb.go linguist-generated linguist-vendored text\n" +
+		"x.pb.go linguist-generated=false\n" +
+		"y.pb.go -linguist-generated -linguist-vendored\n"}}
+	_, attrs, err := scopedRules(f, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{
+		"vendor/a.go": true, "vendor/keep.go": false, "gen/a.go": true, "docs/x.md": true, "docs/api.md": false,
+		"a.pb.go": true, "x.pb.go": true, "y.pb.go": false, "src/main.go": false,
+	} {
+		if got := matchAttrs(attrs, name); got != want {
+			t.Errorf("attribute %q = %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestScopedRulesIgnoreCharacterClasses(t *testing.T) {
+	f := &scopedRulesFS{dirs: map[string][]Entry{"": {{Name: ".gitignore"}}}, files: map[string]string{".gitignore": "" +
+		"*.py[cod]\n[Bb]uild/\nlog[0-9].txt\n[!a]x.c\ndir/a[!b]c\nx[^y]z\nMy Folder/\n"}}
+	ign, _, err := scopedRules(f, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name      string
+		dir, want bool
+	}{
+		{"a.pyc", false, true}, {"pkg/a.pyo", false, true}, {"a.pyx", false, false}, {"a.py", false, false},
+		{"Build", true, true}, {"sub/build", true, true}, {"rebuild", true, false},
+		{"log5.txt", false, true}, {"logx.txt", false, false},
+		{"bx.c", false, true}, {"d/ax.c", false, false}, {"d/bx.c", false, true},
+		{"dir/aqc", false, true}, {"dir/abc", false, false}, {"dir/a/c", false, false},
+		{"xaz", false, true}, {"xyz", false, false},
+		{"My Folder", true, true},
+	} {
+		if got := matchRules(ign, tc.name, tc.dir); got != tc.want {
+			t.Errorf("%q directory=%v: got %v want %v", tc.name, tc.dir, got, tc.want)
+		}
+	}
+}
+
+func TestScanAcceptsRealRepositoryRules(t *testing.T) {
+	tb := table(t)
+	for _, files := range []map[string]string{
+		{".gitattributes": "aii-os.gitattributes", ".gitignore": "aii-os.gitignore"},
+		{".gitattributes": "aii-plugin-sdk.gitattributes"},
+	} {
+		root := t.TempDir()
+		for name, fixture := range files {
+			raw, err := os.ReadFile(filepath.Join("testdata", "rules", fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, root, name, string(raw))
+		}
+		write(t, root, "shells/android/gradlew.bat", "@echo off\r\n")
+		write(t, root, "a.go", goFile)
+		write(t, root, "data/secret.go", goFile)
+		fs := &OSFS{Root: root}
+		s, err := NewScan(fs, "cq_rules", "src", "", nil, nil, false, 100, 131072)
+		if err != nil {
+			t.Fatalf("%v: scan start refused: %v", files, err)
+		}
+		j := &fakeJudge{p: 0.1}
+		ignored := 0
+		if files[".gitignore"] != "" {
+			ignored = 1
+		}
+		if _, err := s.Step(tb, fs, j, MemCache{}, 64, 50); err != nil || s.Status != "done" || s.FilesJudged != 2-ignored ||
+			s.Excluded["gitignore"] != ignored || s.Excluded["gitattributes"] != 0 || j.calls == 0 {
+			t.Fatalf("%v: err %v status %s judged %d excluded %v", files, err, s.Status, s.FilesJudged, s.Excluded)
 		}
 	}
 }

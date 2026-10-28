@@ -1,6 +1,7 @@
 package cq
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -23,10 +24,12 @@ type ServiceErrorCode string
 const ServiceMaxTokensExceeded ServiceErrorCode = "max_tokens_exceeded"
 
 const (
-	RetryBaseSeconds       int64  = 1
-	RetryMaxBackoffSeconds int64  = 300
-	RetryMaxAfterSeconds   int64  = 86400
-	MaxRequestRetries      uint32 = 8
+	RetryBaseSeconds       int64 = 1
+	RetryMaxBackoffSeconds int64 = 300
+	RetryMaxAfterSeconds   int64 = 86400
+
+	DefaultRequestRetries uint32 = 8
+	MaxRequestRetries     uint32 = 32
 )
 
 type RequestError struct {
@@ -50,7 +53,7 @@ func (e *RequestError) Unwrap() error {
 	return ErrRefused
 }
 
-func ClassifyHTTPFailure(status int, code ServiceErrorCode, retryAfterS *int64) *RequestError {
+func ClassifyHTTPFailure(status int, code ServiceErrorCode, body []byte, retryAfterS *int64) *RequestError {
 	if status == 200 {
 		return nil
 	}
@@ -62,7 +65,7 @@ func ClassifyHTTPFailure(status int, code ServiceErrorCode, retryAfterS *int64) 
 		e.Reason = RequestBodyLimit
 	case status == 400 || status == 422 || status == 415:
 		e.Reason = RequestValidation
-	case status == 401 || status == 403:
+	case status == 401 || status == 403 && json.Valid(body):
 		e.Reason = RequestAuthentication
 	case status == 429:
 		e.Reason = RequestRateLimit
@@ -97,7 +100,7 @@ func (r RequestRetry) Ready(nowMS int64) bool {
 	return r.valid() && nowMS >= 0 && nowMS >= r.NotBeforeMS
 }
 
-func (r RequestRetry) Next(failure *RequestError, nowMS int64) (RequestRetry, error) {
+func (r RequestRetry) Next(failure *RequestError, nowMS int64, budget uint32) (RequestRetry, error) {
 	if !r.valid() || nowMS < 0 {
 		return r, ErrRetryState
 	}
@@ -110,7 +113,7 @@ func (r RequestRetry) Next(failure *RequestError, nowMS int64) (RequestRetry, er
 	if !r.Ready(nowMS) {
 		return r, ErrRetryNotDue
 	}
-	if r.Attempts >= MaxRequestRetries {
+	if r.Attempts >= min(budget, MaxRequestRetries) {
 		return r, ErrRetryExhausted
 	}
 	seconds := min(RetryBaseSeconds<<r.Attempts, RetryMaxBackoffSeconds)

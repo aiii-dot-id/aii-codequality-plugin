@@ -214,33 +214,6 @@ func TestAnUnreadableEntryIsAMiss(t *testing.T) {
 	}
 }
 
-func TestTheMemoRemembersTheRepliedModel(t *testing.T) {
-	m := LoadMemo(nil)
-	if m.Resolve("jev", "jev-latest") != "jev-latest" {
-		t.Fatal("before any reply, the configured model")
-	}
-	if _, ok := m.Changed(); ok {
-		t.Fatal("nothing learned, nothing to write")
-	}
-	m.Learn("jev", "jev-latest", "jev-1.13.0")
-	b, ok := m.Changed()
-	if !ok {
-		t.Fatal("learned, to write")
-	}
-	again := LoadMemo(b)
-	if again.Resolve("jev", "jev-latest") != "jev-1.13.0" || again.Resolve("local judge.lan:8080", "jev-latest") != "jev-latest" {
-		t.Fatal("remembered per judge and configured model")
-	}
-	if LoadMemo([]byte("{bad")).Resolve("jev", "m") != "m" {
-		t.Fatal("an unreadable memo is empty")
-	}
-	var nilMemo *Memo
-	nilMemo.Learn("jev", "m", "n")
-	if nilMemo.Resolve("jev", "m") != "m" {
-		t.Fatal("no memo resolves to the configured model")
-	}
-}
-
 func TestReplyModel(t *testing.T) {
 	for body, want := range map[string]string{
 		`{"model":"jev-1.13.0","answers":{}}`: "jev-1.13.0",

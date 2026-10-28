@@ -5,16 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/aiii-dot-id/aii-codequality-plugin/cq"
 )
 
 func TestModelPinAndAliasMove(t *testing.T) {
-	memo := cq.LoadMemo(nil)
-	memo.Learn(backendJev, jevDefault, "jev-1.13.0")
-	if memo.Resolve(backendJev, jevDefault) != "jev-1.13.0" {
-		t.Fatal("fixture did not establish old memo")
-	}
 	pin, err := NewModelPin(backendJev, jevBase+systemOne, jevDefault, "")
 	if err != nil {
 		t.Fatal(err)

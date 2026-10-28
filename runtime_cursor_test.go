@@ -18,7 +18,7 @@ func (oneFileFS) List(string) ([]cq.Entry, bool, error) {
 func (oneFileFS) Read(string, int64) ([]byte, error) { return []byte(goSource), nil }
 
 func TestRuntimeCheckpointKeepsCommittedCursor(t *testing.T) {
-	cfg := config{backend: backendLocal, localBase: "https://fixture.invalid", model: "fixed", ints: map[string]int64{}}
+	cfg := config{backend: backendLocal, localBase: "https://fixture.invalid", model: "fixed", ints: defaultInts()}
 	s, e := cq.NewScan(oneFileFS{}, "cursor", ".", "", nil, nil, false, 1, 1<<20)
 	if e != nil {
 		t.Fatal(e)
@@ -28,7 +28,7 @@ func TestRuntimeCheckpointKeepsCommittedCursor(t *testing.T) {
 		t.Fatal(e)
 	}
 	s.Runtime, _ = json.Marshal(binding)
-	j, e := newJudge(cfg, 12, cq.LoadMemo(nil))
+	j, e := newJudge(cfg, 12)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -53,7 +53,7 @@ func TestRuntimeCheckpointKeepsCommittedCursor(t *testing.T) {
 	if restored.FilesSeen != 0 || restored.Status != "running" {
 		t.Fatalf("unfinished counter acknowledged: %+v", restored)
 	}
-	r, e := newJudge(cfg, 12, cq.LoadMemo(nil))
+	r, e := newJudge(cfg, 12)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -69,14 +69,14 @@ func TestRuntimeCheckpointKeepsCommittedCursor(t *testing.T) {
 }
 
 func TestRuntimeCheckpointOverflowCannotMutateLiveTraversal(t *testing.T) {
-	cfg := config{backend: backendLocal, localBase: "https://fixture.invalid", model: "fixed", ints: map[string]int64{}}
+	cfg := config{backend: backendLocal, localBase: "https://fixture.invalid", model: "fixed", ints: defaultInts()}
 	binding, e := scanBinding(cfg)
 	if e != nil {
 		t.Fatal(e)
 	}
 	raw, _ := json.Marshal(binding)
 	s := &cq.Scan{Runtime: raw, Status: "running", Stack: []string{"child"}, Pending: []cq.Entry{{Name: strings.Repeat("x", 260<<10)}}}
-	j, e := newJudge(cfg, 12, cq.LoadMemo(nil))
+	j, e := newJudge(cfg, 12)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -99,7 +99,7 @@ func TestRuntimeCheckpointOverflowCannotMutateLiveTraversal(t *testing.T) {
 }
 
 func TestOptionalLocalizationRefusalDoesNotBlockChecklist(t *testing.T) {
-	cfg := config{backend: backendLocal, localBase: "https://fixture.invalid", model: "fixed", ints: map[string]int64{}}
+	cfg := config{backend: backendLocal, localBase: "https://fixture.invalid", model: "fixed", ints: defaultInts()}
 	for _, status := range []int{400, 413, 422} {
 		j, _, _ := scanJudgeT(t, cfg, nil, 1000)
 		j.send = func(string, *sdk.HTTPOptions) (sdk.HTTPResult, error) { return sdk.HTTPResult{Status: status}, nil }
@@ -117,10 +117,8 @@ func TestOptionalLocalizationRefusalDoesNotBlockChecklist(t *testing.T) {
 }
 
 func TestDirectInvocationFreshAliasAndVisibleAssessment(t *testing.T) {
-	cfg := config{backend: backendJev, model: "jev-latest", handle: "test", ints: map[string]int64{}}
-	memo := cq.LoadMemo(nil)
-	memo.Learn(backendJev, cfg.model, "jev-1.0.0")
-	j, e := newJudge(cfg, 12, memo)
+	cfg := config{backend: backendJev, model: "jev-latest", handle: "test", ints: defaultInts()}
+	j, e := newJudge(cfg, 12)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -128,7 +126,7 @@ func TestDirectInvocationFreshAliasAndVisibleAssessment(t *testing.T) {
 		t.Fatal(e)
 	}
 	if j.CacheEligible() || j.Model() != cfg.model {
-		t.Fatal("direct judge trusts stale memo")
+		t.Fatal("direct judge trusts an unresolved alias")
 	}
 	j.send = (&capture{model: "jev-1.14.0"}).send
 	records, e := cq.JudgeText(tableT(t), j, cq.MemCache{}, "x.go", "go", goSource)

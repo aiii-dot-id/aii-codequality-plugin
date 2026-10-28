@@ -5,10 +5,11 @@ Jev, or an operator-configured local endpoint. It supplies a reading list and it
 evidence, not a correctness certificate, call graph, or automatic fix. Source text
 is sent to the configured judge; `sent_to` names the destination.
 
-**Unreleased review-queue implementation.** This describes working source, not a
-released or verified candidate. The live semantic pilot is **NOT RUN**; ordering
-usefulness, model accuracy and review-time savings are not established. See
-[RELEASING.md](RELEASING.md) for separate gates and the discrepancies below.
+**0.1.14 is released** (T3-signed, 2026-10-27). This source is **0.1.15, unreleased**:
+it corrects 0.1.14's regressions (see [CHANGELOG.md](CHANGELOG.md)) and awaits the release
+ladder. The live semantic pilot is **NOT RUN**; ordering usefulness, model accuracy and
+review-time savings are not established. See [RELEASING.md](RELEASING.md) for separate
+gates and the discrepancies below.
 
 ## Operations and report views
 
@@ -57,21 +58,26 @@ relative to `root`. Keep both views: no allegation does not mean complete covera
 For new shapes, copy `review.next_page_cursor` to `page_cursor` with the same scan,
 shape and lane; an empty next cursor ends that view. `limit` is 1–100 (default 20).
 `page_bytes` is 4,096–200,000 (default 131,072) for entries; metadata is additional.
-The opaque cursor binds checkpoint, journal evidence and query. On `STALE_CURSOR`,
+The opaque cursor binds checkpoint, the ranked prefix, the journal's length and query. On `STALE_CURSOR`,
 restart at the first page: a running scan can change without adding a finding.
 Do not reuse a findings integer cursor as a queue cursor. On
 `REVIEW_ENTRY_TOO_LARGE`, use a larger allowed page or `findings` for individual
 chunk evidence.
 
-**Pagination cannot reach beyond the report-input cap.** V2 reporting validates
-and digests the entire journal but retains a **2 MiB event prefix** as input. If it
-does not all fit, `review.report_complete=false`; totals and ranking cover that
+**Pagination cannot reach beyond the report-input cap.** A v2 report retains and
+ranks a **1 MiB event prefix** of the journal and reads beyond it only the uncommitted
+suffix after the checkpoint, which it validates (a torn tail fails closed); the part
+between was validated when its checkpoint was committed and is not read. Report memory
+and time are therefore bounded by the prefix, not the journal: on the 64 MiB guest
+worker a report answers in 2.3–4.1 s on journals of 5, 16 and 47 MiB (0.1.14 read the
+whole journal and trapped once it passed 2 MiB of real scan records). If the journal does not all fit, `review.report_complete=false`; totals and ranking cover that
 prefix only, not the repository's top N. Summary/findings use `complete=false`
 with an explanatory note. Legacy result input is bounded at 48 MiB. Raising
 `page_bytes`, filtering or following every cursor does not recover omitted input.
 The available operational route is a **new narrower scan**. Durable results remain
-stored, but this API has no suffix-export cursor. New-shape responses currently
-expose the false flag without the detailed narrower-scan note in summary/findings.
+stored, but this API has no suffix-export cursor. Every shape, `review_queue`
+and `coverage` included, carries the same `note` with that route whenever the report ranks only
+a prefix.
 
 ## Candidate ordering, not measured superiority
 
@@ -175,7 +181,11 @@ and newlines; long-line fragments can share a line number. Optional localization
 can choose `cannot_localize`, with at most 254 units plus that option. Invalid or
 low-confidence choices, unsupported option counts and localization failure preserve
 allegations without invented locations. Choice distributions are retained when
-supplied; their absence is labeled.
+supplied; their absence is labeled. An unavailable judge (or a step's spent calls)
+is not at first a location outcome: the file stays pending with its checklist evidence
+and the next step asks for the location again. Once a whole retry round (`retry_budget`)
+passes unanswered, the findings are recorded `localization_failed` and the scan moves on,
+so optional evidence cannot hold the window's documentation battery and later files.
 
 Scans apply language rules, nested `.gitignore`/`.gitattributes`, and caller
 exclusions before submission. They exclude symlinks, nested repositories,
@@ -194,16 +204,23 @@ over-budget or incompletely listed rules stop submission for the affected subtre
 No partially parsed rule set authorizes source egress.
 
 `.gitignore` supports blank/comment lines, leading `!`, leading `/` anchoring,
-trailing `/` directory patterns, ASCII literals, `*`, `?`, and `**` as a whole path
-component. Bare names match below their scope; slash patterns anchor there.
-Trailing whitespace is ignored. Escapes, quoted/whitespace or non-ASCII patterns,
-character classes, dot path components and other `**` placements are refused.
-Negation cannot resurrect a pruned ancestor. This is **not full Git equivalence**.
+trailing `/` directory patterns, printable ASCII literals and spaces, `*`, `?`,
+character classes (`*.py[cod]`, `[a-z]`, negated `[!a]`/`[^a]`, never matching
+`/`) and `**` as a whole path component. Bare names match below their scope;
+slash patterns anchor there. Trailing whitespace is ignored. Escapes, quotes,
+POSIX classes, non-ASCII patterns, dot path components and other `**` placements
+are refused. Negation cannot resurrect a pruned ancestor. This is **not full Git
+equivalence**.
 
-`.gitattributes` accepts only positive `linguist-vendored`, `linguist-generated`,
-`linguist-documentation` (optionally `=true`) with supported patterns. Macros, other
-attributes, negated/unset/false values and directory-only patterns are refused.
-Attributes match named paths, not implicit descendants. Correct unsupported rules
+`.gitattributes` is read for `linguist-vendored`, `linguist-generated` and
+`linguist-documentation` only. Set or `=true` excludes; `-x`, `!x` or `=false`
+clears that attribute alone, and each attribute takes its last matching line, as
+in Git. Attributes with no exclusion meaning (`text`, `eol`, `-whitespace`, `diff`,
+`merge`, `filter`, `binary`, `linguist-language`, `linguist-detectable`, macros
+without linguist attributes) are ignored. Linguist forms the parser cannot
+interpret are refused: other values, unknown `linguist-*` names, linguist
+attributes inside a macro, and negated, directory-only or unsupported patterns on
+a linguist line. Attributes match named paths, not implicit descendants. Correct unsupported rules
 within approved scope or use another explicitly authorized scope; do not bypass
 exclusions just to make a scan finish.
 
@@ -233,7 +250,7 @@ new pipeline; reporting does not rewrite old data.
 For **scans**, identity binds backend, full endpoint (including local base path),
 requested name and concrete response name before dependent progress:
 
-- Hosted `jev-latest`/`jev-preview` bypass old alias memo/cache resolution for their
+- Hosted `jev-latest`/`jev-preview` bypass cache resolution for their
   first ordinary assessment reply, then pin its concrete `jev-MAJOR.MINOR.PATCH`
   identity for subsequent requests/cache. Explicit versioned IDs can use cache
   immediately. `/v1/models` lists names, not alias targets. This conservative
@@ -246,13 +263,26 @@ requested name and concrete response name before dependent progress:
   earlier work reportable. Correct the cause and start a new scan.
 
 Rate-limit/availability failures (429, 529 and other 5xx/transport failures) use
-persisted bounded exponential backoff, at most eight retries after the initial
-call, without sleeping in the guest. SDK `RetryAfterS` may extend the delay; waits
+persisted bounded exponential backoff, at most `retry_budget` (default eight)
+retries after the initial call, without sleeping in the guest. SDK `RetryAfterS` may extend the delay; waits
 over one day block instead of retrying early. Before the deadline a step returns
-`retry_not_before_ms` without inference. Invalid unchanged checklist requests
-(400/413/415/422), authentication failures and exhausted retries block the scan.
-A terminal rejection of optional localization alone does not block the checklist
-unless it is an authentication failure; rate/availability waits still apply.
+`retry_not_before_ms` without inference. An outage outlasting the retry budget
+ends that round of backoff, not the scan: it stays `judge_unavailable` and the
+next step (scheduled or manual) retries. A judge refusing one text — a 403 page
+from Jev's edge, or any other 4xx that is not an authentication failure
+(400/404/413/415/422 included) — records that file as `refused_by_judge` and the
+scan moves on, as before 0.1.14. Only an authentication failure (401, or a 403
+answered in JSON) stops the step, as `JUDGE_AUTHENTICATION_REQUIRED` with the
+operator's route in `last_error`; the file stays pending and the scan continues
+once the key works. A refused optional localization request keeps its checklist
+evidence, marked `localization_failed`.
+
+**Known limit — refusal versus authentication.** The split rests on the status and on
+whether a 403's body is JSON; it has not been checked against bodies a real Jev returns.
+A firewall answering 403 in JSON would read as an authentication stop, and a revoked key
+answered with an HTML 403 would mark every file `refused_by_judge` and finish `done`. A
+summary therefore states `refused_by_judge` and how many files were judged whenever the
+judge refused any; a scan that judged nothing is not complete coverage.
 The helper recognizes typed `max_tokens_exceeded` as `model_context_limit`, but the
 current scan adapter passes no typed service code: **HTTP 400 is
 `request_validation`, not a proven token-limit diagnosis**. It does not search
@@ -311,6 +341,7 @@ explicit source-egress and cost approval.
 | `max_file_bytes` | 131072 | 1024–196608 raw bytes; captured by scan |
 | `keep_scans` | 8 | 1–256 |
 | `cache_max_bytes` | 33554432 | 1–256 MiB total over sixteen shards |
+| `retry_budget` | 8 | 0–32 retries of an unavailable judge, waits doubling to 300 s, before they start again; an outage alone does not end a scan, though a Retry-After over a day blocks it |
 | `scheduled_steps` | true | Host advances every 600 s; manual steps still honor backoff |
 
 Caches bind exact outgoing state/questions, battery, preprocessing, catalogue and

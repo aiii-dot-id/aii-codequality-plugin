@@ -20,6 +20,13 @@ const (
 	stateBytes = 8 << 20
 
 	resultsBytes = 48 << 20
+
+	reportInputBytes = 1 << 20
+
+	defaultPageBytes   = 131072
+	defaultReviewLimit = 20
+
+	invokeSlackMS = 6000
 )
 
 var caps = []string{jevHost, netLocal, "fs.sandbox", "fs.private"}
@@ -66,7 +73,7 @@ func init() {
 	p.Handle("models", named(models))
 
 	p.Describe("report", sdk.Descriptor{
-		Summary:        "Report distinct files to review and coverage gaps; summary retains legacy chunk scores. Findings are model allegations, not verified defects. No scan_id lists scans",
+		Summary:        reportSummary,
 		Input:          "schemas/report_in.json",
 		Output:         "schemas/report_out.json",
 		Effects:        sdk.EffectsReadInternal,
@@ -145,28 +152,28 @@ var private = hostStore{sdk.PrivateRoot}
 type poster func(url string, opts *sdk.HTTPOptions) (sdk.HTTPResult, error)
 
 type hostJudge struct {
-	optional               bool
 	writeRuntimeCheckpoint func([]byte) error
 	at                     judgeAt
 	configured             string
 	model                  string
-	memo                   *cq.Memo
 	timeout, left          int
 	send                   poster
 	runtime                *scanRequestState
 	persistRuntime         func() error
 	nowMS, retryBaseMS     int64
+	retryBudget            uint32
 }
 
 var errCallsSpent = fmt.Errorf("%w: the calls this step planned are spent; the next step continues from the answers kept", cq.ErrJudge)
 
-func newJudge(c config, calls int, memo *cq.Memo) (*hostJudge, error) {
+var errUnbound = errors.New("judge called before its scan or invocation binding")
+
+func newJudge(c config, calls int) (*hostJudge, error) {
 	at, err := c.where()
 	if err != nil {
 		return nil, err
 	}
-	return &hostJudge{at: at, configured: c.model, model: memo.Resolve(at.backend, c.model), memo: memo,
-		timeout: c.callMS(calls), left: calls, send: sdk.HTTP.Post}, nil
+	return &hostJudge{at: at, configured: c.model, model: c.model, timeout: c.callMS(calls), left: calls, send: sdk.HTTP.Post}, nil
 }
 
 func (j *hostJudge) Model() string { return j.model }
@@ -178,26 +185,27 @@ func (j *hostJudge) Backend() string {
 }
 
 func (j *hostJudge) Ask(state, questions map[string]any) (map[string]float64, error) {
-	status, body, err := j.post(state, questions)
+	_, body, err := j.post(state, questions)
 	if err != nil {
 		return nil, err
 	}
-	return cq.JudgeReply(status, body)
+	return cq.ParseAnswers(body)
 }
 
 func (j *hostJudge) Choose(state, questions map[string]any) (map[string]cq.Choice, error) {
-	j.optional = true
-	defer func() { j.optional = false }()
-	status, body, err := j.post(state, questions)
+	_, body, err := j.post(state, questions)
 	if err != nil {
 		return nil, err
 	}
-	return cq.ChoiceReply(status, body)
+	return cq.ParseChoices(body)
 }
 
 func (j *hostJudge) post(state, questions map[string]any) (int, []byte, error) {
 	if j.left <= 0 {
 		return 0, nil, errCallsSpent
+	}
+	if j.runtime == nil {
+		return 0, nil, errUnbound
 	}
 	body, err := cq.RequestBody(j.configured, state, questions)
 	if err != nil {
@@ -213,22 +221,9 @@ func (j *hostJudge) post(state, questions map[string]any) (int, []byte, error) {
 	if _, denied := sdk.AsDenied(err); denied {
 		return 0, nil, err
 	}
-	if j.runtime != nil {
-		raw := responseBody(res)
-		if e := j.scanResponse(res.Status, raw, res.RetryAfterS); e != nil {
-			return res.Status, raw, e
-		}
-		return res.Status, raw, nil
-	}
-	if err != nil && res.Status == 0 {
-		return 0, nil, fmt.Errorf("%w: no answer within the %d ms this call allowed: %v", cq.ErrJudge, j.timeout, err)
-	}
 	raw := responseBody(res)
-	if res.Status == 200 {
-		if m := cq.ReplyModel(raw); m != "" {
-			j.model = m
-			j.memo.Learn(j.at.backend, j.configured, m)
-		}
+	if e := j.scanResponse(res.Status, raw, res.RetryAfterS); e != nil {
+		return res.Status, raw, e
 	}
 	return res.Status, raw, nil
 }
@@ -240,20 +235,6 @@ func responseBody(res sdk.HTTPResult) []byte {
 		raw = []byte(s)
 	}
 	return raw
-}
-
-func loadMemo() *cq.Memo {
-	b, err := cq.ReadWhole(private, cq.ModelsFile, 64<<10)
-	if err != nil {
-		b = nil
-	}
-	return cq.LoadMemo(b)
-}
-
-func saveMemo(m *cq.Memo) {
-	if b, ok := m.Changed(); ok {
-		_ = sdk.Files.Write(sdk.PrivateRoot, cq.ModelsFile, b)
-	}
 }
 
 func newCache(c config) *cq.ShardCache { return &cq.ShardCache{S: private, MaxBytes: c.cacheBytes()} }
@@ -276,14 +257,14 @@ func failure(err error) (any, error) {
 		return nil, sdk.Deny(d.ReasonCode, fmt.Sprintf(hostDenied, d.Message))
 	case errors.As(err, &op):
 		return nil, err
+	case errors.As(err, &request) && request.Reason == cq.RequestAuthentication:
+		return nil, sdk.Fail("JUDGE_AUTHENTICATION_REQUIRED", fmt.Sprintf(judgeKeyRefused, request.Error()))
+	case errors.As(err, &request) && request.Retryable():
+		return nil, sdk.Fail("JUDGE_UNAVAILABLE", err.Error()+" — try again later")
 	case errors.As(err, &request):
-		return nil, sdk.Fail("JUDGE_"+strings.ToUpper(string(request.Reason)), request.Error())
+		return nil, sdk.Fail("JUDGE_"+strings.ToUpper(string(request.Reason)), err.Error())
 	case errors.As(err, &pin):
 		return nil, sdk.Fail("SCAN_MODEL_UNRESOLVED", pin.Error())
-	case errors.Is(err, cq.ErrKey):
-		return nil, sdk.Fail("JUDGE_KEY_REFUSED", err.Error())
-	case errors.Is(err, cq.ErrRefused):
-		return nil, sdk.Fail("JUDGE_REFUSED_TEXT", err.Error())
 	case errors.Is(err, cq.ErrJudge):
 		return nil, sdk.Fail("JUDGE_UNAVAILABLE", err.Error()+" — try again later")
 	}
@@ -332,12 +313,14 @@ func judgeBudget(cfg config, items []sdk.Object) (int, error) {
 		text, _ := it.String("text")
 		if int64(len(text)) > cfg.maxFileBytes() {
 			ref, _ := it.String("ref")
-			return 0, sdk.Fail("OPERATION_ARGUMENT_INVALID", fmt.Sprintf("item %q: %d UTF-8 bytes exceeds max_file_bytes %d; pass shorter text", ref, len(text), cfg.maxFileBytes()))
+			return 0, sdk.Fail("OPERATION_ARGUMENT_INVALID", fmt.Sprintf(judgeItemTooLarge, ref, len(text), cfg.maxFileBytes()))
 		}
 		budget += cq.EstimatedCallsAt(int64(len(text)), cfg.chunkBytes())
 	}
 	if budget > cfg.maxCalls() {
-		return 0, sdk.Fail("OPERATION_ARGUMENT_INVALID", fmt.Sprintf("these texts need up to %d judge calls; one invoke makes at most %d — pass fewer or shorter texts", budget, cfg.maxCalls()))
+
+		largest := max(cfg.maxCalls()/3*cfg.chunkBytes()-1, 0)
+		return 0, sdk.Fail("OPERATION_ARGUMENT_INVALID", fmt.Sprintf(judgeTooManyCalls, budget, cfg.maxCalls(), cfg.chunkBytes(), largest))
 	}
 	return budget, nil
 }
@@ -359,13 +342,14 @@ func judge(c sdk.Call) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	memo := loadMemo()
-	j, err := newJudge(cfg, budget, memo)
+	j, err := newJudge(cfg, budget)
 	if err != nil {
 		return nil, err
 	}
-	defer saveMemo(memo)
-	now, _ := c.HostNowMillis()
+	now, err := hostNow(c)
+	if err != nil {
+		return nil, err
+	}
 	if err := j.bindInvocation(cfg, now); err != nil {
 		return nil, err
 	}
@@ -447,7 +431,7 @@ func loadScan(id string) (*cq.Scan, error) {
 			}
 		}
 		if recovered {
-			s.LastError = "Recovered the last valid checkpoint after an incomplete write; durable journal records will be replayed. " + s.LastError
+			s.LastError = checkpointRecovered + s.LastError
 		}
 	}
 	return &s, nil
@@ -459,7 +443,7 @@ func saveScan(s *cq.Scan) error {
 		return err
 	}
 	if s.Version != cq.RecordVersion {
-		return sdk.Fail("SCAN_RESTART_REQUIRED", "legacy scan is report-only; start a new scan")
+		return sdk.Fail("SCAN_RESTART_REQUIRED", legacyReportOnly)
 	}
 	err = checkpoints(s.ID).Save(b)
 	if !errors.Is(err, cq.ErrCheckpointFull) {
@@ -467,7 +451,7 @@ func saveScan(s *cq.Scan) error {
 	}
 
 	s.Status = "storage_cap"
-	s.LastError = "pending walk exceeds bounded checkpoint storage; discovery incomplete; start a narrower scan"
+	s.LastError = checkpointFull
 	s.Stack, s.Pending, s.Refused = nil, nil, nil
 	s.Dir = ""
 	b, err = json.Marshal(s)
@@ -523,7 +507,10 @@ func scan(c sdk.Call) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		now, _ := c.HostNowMillis()
+		now, err := hostNow(c)
+		if err != nil {
+			return nil, err
+		}
 		return stepScan(cfg, s, now)
 	}
 	return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", "scan requires action: start | step")
@@ -531,10 +518,10 @@ func scan(c sdk.Call) (any, error) {
 
 func scanStepRefusal(s *cq.Scan) string {
 	if s.Version != cq.RecordVersion {
-		return "legacy scan remains reportable; start a new scan for contextual v2 assessment"
+		return legacyScanRefusal
 	}
 	if s.MaxFileBytes <= 0 || s.MaxFileBytes > maximumFileBytes {
-		return "saved scan file cap is outside this release support; retained results remain reportable; start a new scan within max_file_bytes bounds"
+		return savedCapUnsupported
 	}
 	return ""
 }
@@ -543,27 +530,26 @@ func stepScan(cfg config, s *cq.Scan, nowMS int64) (any, error) {
 	if why := scanStepRefusal(s); why != "" {
 		return nil, sdk.Fail("SCAN_RESTART_REQUIRED", why)
 	}
-	journal := &cq.Journal{Store: private, Path: journalPath(s.ID)}
-	if _, err := journal.Walk(0, nil); err != nil {
+
+	progress := &cq.JournalProgress{Journal: &cq.Journal{Store: private, Path: journalPath(s.ID)}, Offset: s.ProgressOffset}
+	if err := progress.Verify(); err != nil {
 		return nil, fmt.Errorf("scan journal unavailable: %w", err)
 	}
-	s.Progress = &cq.JournalProgress{Journal: journal, Offset: s.ProgressOffset}
+	s.Progress = progress
 	t, err := table()
 	if err != nil {
 		return nil, err
 	}
 	calls := stepCalls(cfg, s)
-	memo := loadMemo()
-	j, err := newJudge(cfg, calls, memo)
+	j, err := newJudge(cfg, calls)
 	if err != nil {
 		return nil, err
 	}
-	defer saveMemo(memo)
 	if err := j.bindScan(cfg, s, nowMS); err != nil {
 		return nil, err
 	}
 	if j.runtime.Blocked != "" {
-		return nil, sdk.Fail("SCAN_REQUEST_BLOCKED", j.runtime.Blocked+"; retained results remain reportable; start a new scan after correcting the cause")
+		return nil, sdk.Fail("SCAN_REQUEST_BLOCKED", fmt.Sprintf(scanBlocked, j.runtime.Blocked))
 	}
 	if !j.runtime.Retry.Ready(nowMS) {
 		out := scanView(cfg, s)
@@ -576,7 +562,11 @@ func stepScan(cfg config, s *cq.Scan, nowMS int64) (any, error) {
 		s.Status, s.LastError = "request_blocked", j.runtime.Blocked
 	}
 	if errors.Is(err, cq.ErrJournalFull) {
-		s.Status, s.LastError = "storage_cap", "assessment journal reached its storage bound; retained results remain reportable; start a narrower scan"
+		s.Status, s.LastError = "storage_cap", journalFull
+	}
+	var request *cq.RequestError
+	if errors.As(err, &request) && request.Reason == cq.RequestAuthentication {
+		s.LastError = fmt.Sprintf(judgeKeyRefused, request.Error())
 	}
 	if serr := saveScan(s); serr != nil {
 		return nil, serr
@@ -625,15 +615,22 @@ func scanStart(c sdk.Call) (any, error) {
 		if !validID(id) {
 			return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", "scan_id is letters, digits, '_' and '-' only")
 		}
-		if _, _, exists, _ := sdk.Files.Digest(sdk.PrivateRoot, statePath(id)); exists {
-			return nil, sdk.Fail("SCAN_EXISTS", "a scan named "+id+" exists — step it, or choose another name")
-		}
 	} else {
-		now, _ := c.HostNowMillis()
+		now, err := hostNow(c)
+		if err != nil {
+			return nil, err
+		}
 		id = "cq_" + strconv.FormatInt(now, 10)
-		if _, _, exists, _ := sdk.Files.Digest(sdk.PrivateRoot, statePath(id)); exists {
+		if exists, err := scanExists(id); err != nil {
+			return nil, err
+		} else if exists {
 			id += "_" + strconv.FormatInt(now%997, 10)
 		}
+	}
+	if exists, err := scanExists(id); err != nil {
+		return nil, err
+	} else if exists {
+		return nil, sdk.Fail("SCAN_EXISTS", "a scan named "+id+" exists — step it, or choose another name")
 	}
 	s, err := cq.NewScan(hostFS{folder}, id, folder, "", exclude, languages, tests, maxFiles, cfg.maxFileBytes())
 	if err != nil {
@@ -655,10 +652,8 @@ func scanStart(c sdk.Call) (any, error) {
 		return nil, err
 	}
 
-	if _, _, exists, err := sdk.Files.Digest(sdk.PrivateRoot, journalPath(id)); err != nil {
+	if err := removeScanFiles(id, false); err != nil {
 		return nil, err
-	} else if exists {
-		return nil, sdk.Fail("SCAN_EXISTS", "scan journal already exists; choose another scan_id")
 	}
 	if err := private.Write(journalPath(id), nil); err != nil {
 		return nil, err
@@ -669,7 +664,7 @@ func scanStart(c sdk.Call) (any, error) {
 		return nil, err
 	}
 	if len(initial) > 240<<10 {
-		return nil, sdk.Fail("SCAN_TOO_WIDE", "initial scan settings exceed checkpoint budget")
+		return nil, sdk.Fail("SCAN_TOO_WIDE", scanTooWide)
 	}
 	for _, name := range checkpoints(id).Paths {
 		if err := private.Write(name, nil); err != nil {
@@ -691,14 +686,38 @@ func pruneScans(keep int) error {
 		return err
 	}
 	for len(ids) >= keep && len(ids) > 0 {
-		for _, p := range []string{statePath(ids[0]), resultsPath(ids[0]), journalPath(ids[0]), checkpoints(ids[0]).Paths[0], checkpoints(ids[0]).Paths[1]} {
-			if _, err := sdk.Files.Delete(sdk.PrivateRoot, p); err != nil {
-				return err
-			}
+		if err := removeScanFiles(ids[0], true); err != nil {
+			return err
 		}
 		ids = ids[1:]
 	}
 	return nil
+}
+
+func removeScanFiles(id string, withState bool) error {
+	files := []string{resultsPath(id), journalPath(id), checkpoints(id).Paths[0], checkpoints(id).Paths[1]}
+	if withState {
+		files = append(files, statePath(id))
+	}
+	for _, p := range files {
+		if _, err := sdk.Files.Delete(sdk.PrivateRoot, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func scanExists(id string) (bool, error) {
+	_, _, exists, err := sdk.Files.Digest(sdk.PrivateRoot, statePath(id))
+	return exists, err
+}
+
+func hostNow(c sdk.Call) (int64, error) {
+	now, ok := c.HostNowMillis()
+	if !ok || now <= 0 {
+		return 0, sdk.Fail("HOST_CLOCK_UNAVAILABLE", hostClockMissing)
+	}
+	return now, nil
 }
 
 func scanIDs() ([]string, error) {
@@ -729,17 +748,22 @@ func advance(c sdk.Call) (any, error) {
 		return nil, err
 	}
 	return advanceScans(ids, loadScan, func(s *cq.Scan) (any, error) {
-		now, _ := c.HostNowMillis()
+		now, err := hostNow(c)
+		if err != nil {
+			return nil, err
+		}
 		return stepScan(cfg, s, now)
 	})
 }
 
 func advanceScans(ids []string, load func(string) (*cq.Scan, error), step func(*cq.Scan) (any, error)) (any, error) {
-	skipped := []any{}
+	skipped, unreadable := []any{}, []any{}
 	for _, id := range ids {
 		s, err := load(id)
 		if err != nil {
-			return nil, err
+
+			unreadable = append(unreadable, unreadableScan(id, err))
+			continue
 		}
 		if s.Status != "running" && s.Status != "judge_unavailable" {
 			continue
@@ -755,9 +779,27 @@ func advanceScans(ids []string, load func(string) (*cq.Scan, error), step func(*
 		view := out.(map[string]any)
 		view["advanced"] = id
 		view["report_only"] = skipped
+		view["unreadable"] = unreadable
 		return view, nil
 	}
-	return map[string]any{"advanced": "", "reason": "no eligible unfinished scan", "report_only": skipped}, nil
+	return map[string]any{"advanced": "", "reason": advanceNone, "report_only": skipped, "unreadable": unreadable}, nil
+}
+
+func listScans(cfg config, ids []string, load func(string) (*cq.Scan, error)) []any {
+	scans := make([]any, 0, len(ids))
+	for _, id := range ids {
+		s, err := load(id)
+		if err != nil {
+			scans = append(scans, unreadableScan(id, err))
+			continue
+		}
+		scans = append(scans, scanView(cfg, s))
+	}
+	return scans
+}
+
+func unreadableScan(id string, err error) map[string]any {
+	return map[string]any{"scan_id": id, "status": "unreadable", "last_error": err.Error(), "route": scanUnreadable}
 }
 
 func report(c sdk.Call) (any, error) {
@@ -790,13 +832,7 @@ func reportData(c sdk.Call, cfg config) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		scans := make([]any, 0, len(ids))
-		for _, id := range ids {
-			if s, err := loadScan(id); err == nil {
-				scans = append(scans, scanView(cfg, s))
-			}
-		}
-		return map[string]any{"scans": scans}, nil
+		return map[string]any{"scans": listScans(cfg, ids, loadScan)}, nil
 	}
 	s, err := loadScan(id)
 	if err != nil {
@@ -807,7 +843,7 @@ func reportData(c sdk.Call, cfg config) (any, error) {
 	var coverage []cq.Coverage
 	complete := true
 	if s.Version == cq.RecordVersion {
-		recs, coverage, b, complete, err = cq.JournalReport(&cq.Journal{Store: private, Path: journalPath(id)}, 2<<20)
+		recs, coverage, b, complete, err = cq.JournalReport(&cq.Journal{Store: private, Path: journalPath(id)}, reportInputBytes, s.ProgressOffset)
 		if err != nil {
 			return nil, err
 		}
@@ -835,7 +871,7 @@ func reportData(c sdk.Call, cfg config) (any, error) {
 	incomplete := func(out map[string]any) map[string]any {
 		if !complete {
 			out["complete"] = false
-			out["note"] = "Report input exceeds its bounded retained prefix; this is not a repository-wide ranking. Use a narrower scan. Durable results are retained; no omitted file is declared safe."
+			out["note"] = fmt.Sprintf(reportIncomplete, reportInputBytes>>20)
 		}
 		return out
 	}
@@ -843,7 +879,7 @@ func reportData(c sdk.Call, cfg config) (any, error) {
 	if shape == "review_queue" || shape == "coverage" {
 		lane, _ := args.String("lane")
 		if lane != "" && lane != "correctness" && lane != "maintainability" {
-			return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", "lane must be correctness or maintainability")
+			return nil, sdk.Fail("OPERATION_ARGUMENT_INVALID", laneInvalid)
 		}
 		view := cq.BuildReview(recs, coverage, s.Version == cq.RecordVersion && s.Status == "done", complete, lane)
 		checkpoint, e := json.Marshal(s)
@@ -852,7 +888,7 @@ func reportData(c sdk.Call, cfg config) (any, error) {
 		}
 		generation := cq.ReviewGeneration(checkpoint, b)
 		cursor, _ := args.String("page_cursor")
-		pageBytes, limit := 131072, 20
+		pageBytes, limit := defaultPageBytes, defaultReviewLimit
 		if n, ok := args.Int("page_bytes"); ok {
 			pageBytes = int(n)
 		}
@@ -873,7 +909,7 @@ func reportData(c sdk.Call, cfg config) (any, error) {
 		if e != nil {
 			return nil, e
 		}
-		return map[string]any{"root": s.Root, "scan_id": s.ID, "review": json.RawMessage(raw)}, nil
+		return incomplete(map[string]any{"root": s.Root, "scan_id": s.ID, "review": json.RawMessage(raw)}), nil
 	}
 	if shape == "" || shape == "summary" {
 		worst := 10
@@ -883,10 +919,15 @@ func reportData(c sdk.Call, cfg config) (any, error) {
 		out := cq.Summary(recs, worst)
 		out["scan"] = scanView(cfg, s)
 		out["catalogue"] = cq.CatalogueDigest()
+
+		if n := s.Excluded["refused_by_judge"]; n > 0 {
+			out["refused_by_judge"] = n
+			out["refused_note"] = fmt.Sprintf(refusedNote, n, s.FilesJudged)
+		}
 		return incomplete(out), nil
 	}
 	cursor, _ := args.Int("cursor")
-	pageBytes := 131072
+	pageBytes := defaultPageBytes
 	if n, ok := args.Int("page_bytes"); ok && n >= 4096 && n <= 200000 {
 		pageBytes = int(n)
 	}

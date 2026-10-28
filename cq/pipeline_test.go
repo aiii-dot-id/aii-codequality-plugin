@@ -9,11 +9,11 @@ import (
 )
 
 type progressJudge struct {
-	calls        int
-	remaining    int
-	docsFail     bool
-	locationFail bool
-	observed     []map[string]any
+	calls                         int
+	remaining                     int
+	docsFail                      bool
+	locationFail, locationRefused bool
+	observed                      []map[string]any
 }
 
 func (j *progressJudge) Model() string { return "fixture-pinned" }
@@ -39,6 +39,9 @@ func (j *progressJudge) Ask(s map[string]any, q map[string]any) (map[string]floa
 func (j *progressJudge) Choose(s map[string]any, q map[string]any) (map[string]Choice, error) {
 	if j.locationFail {
 		return nil, ErrJudge
+	}
+	if j.locationRefused {
+		return nil, ErrRefused
 	}
 	out := map[string]Choice{}
 	for id := range q {
@@ -78,13 +81,19 @@ func TestPartialFindingsSurvive(t *testing.T) {
 	if AssessmentOf(recs[1]).Status != "unknown" {
 		t.Fatal("failed docs assessed")
 	}
-	j = &progressJudge{remaining: 20, locationFail: true}
+
+	j = &progressJudge{remaining: 20, locationRefused: true}
 	recs, err = JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, nil)
 	if err != nil || len(recs[0].Findings) != 1 || recs[0].Findings[0].LocationReason != "localization_failed" {
-		t.Fatalf("optional failure erased evidence: %v %+v", err, recs)
+		t.Fatalf("optional refusal erased evidence: %v %+v", err, recs)
 	}
 	if AssessmentOf(recs[0]).Missing != 0 {
 		t.Fatal("localization changed checklist coverage")
+	}
+	j = &progressJudge{remaining: 20, locationFail: true}
+	recs, err = JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, nil)
+	if !errors.Is(err, ErrJudge) || len(recs) != 1 || len(recs[0].Findings) != 1 || !localizationPending(recs[0]) || AssessmentOf(recs[0]).Missing != 0 {
+		t.Fatalf("transient location failure erased evidence or became an outcome: %v %+v", err, recs)
 	}
 }
 

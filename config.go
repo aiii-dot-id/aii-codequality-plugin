@@ -32,6 +32,7 @@ const (
 	maximumFileBytes    = 192 << 10
 	defaultKeepScans    = 8
 	defaultCacheBytes   = 32 << 20
+	defaultRetryBudget  = int64(cq.DefaultRequestRetries)
 )
 
 type bound struct {
@@ -49,6 +50,7 @@ var bounds = []bound{
 	{"max_file_bytes", defaultMaxFileBytes, 1024, maximumFileBytes},
 	{"keep_scans", defaultKeepScans, 1, 256},
 	{"cache_max_bytes", defaultCacheBytes, 1 << 20, 256 << 20},
+	{"retry_budget", defaultRetryBudget, 0, int64(cq.MaxRequestRetries)},
 }
 
 type settingsReader interface {
@@ -75,6 +77,7 @@ func (c config) chunkBytes() int     { return int(c.ints["chunk_bytes"]) }
 func (c config) maxFileBytes() int64 { return c.ints["max_file_bytes"] }
 func (c config) keepScans() int      { return int(c.ints["keep_scans"]) }
 func (c config) cacheBytes() int64   { return c.ints["cache_max_bytes"] }
+func (c config) retryBudget() int64  { return c.ints["retry_budget"] }
 
 func (c config) callMS(calls int) int { return min(c.maxCallMS(), c.stepMS()/max(calls, 1)) }
 

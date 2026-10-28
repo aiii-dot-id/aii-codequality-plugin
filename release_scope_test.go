@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -115,10 +116,13 @@ func TestAdvanceSkipsReportOnlyWithoutMutation(t *testing.T) {
 	if stepped != 1 || string(before) != string(after) {
 		t.Fatalf("steps %d, retained scans changed: %s", stepped, after)
 	}
+
 	sentinel := errors.New("read failure")
-	_, err := advanceScans([]string{"old"}, func(string) (*cq.Scan, error) { return nil, sentinel }, step)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("swallowed read error: %v", err)
+	result, err := advanceScans([]string{"old"}, func(string) (*cq.Scan, error) { return nil, sentinel }, step)
+	out, _ := result.(map[string]any)
+	if err != nil || out["advanced"] != "" || len(out["unreadable"].([]any)) != 1 ||
+		out["unreadable"].([]any)[0].(map[string]any)["last_error"] != sentinel.Error() {
+		t.Fatalf("swallowed read error: %v %v", out, err)
 	}
 }
 
@@ -156,5 +160,62 @@ func TestReportsSurviveInvalidAssessmentSettings(t *testing.T) {
 	out, err := reportWithSettings(values{}, func(config) (any, error) { return map[string]any{"ok": true}, nil })
 	if err != nil || out.(map[string]any)["assessment_configuration_error"] != nil {
 		t.Fatalf("valid settings: %v %v", out, err)
+	}
+}
+
+func TestAnUnreadableScanIsListedNotDropped(t *testing.T) {
+	good := &cq.Scan{ID: "good", Version: cq.RecordVersion, MaxFileBytes: 128 << 10, Status: "running"}
+	load := func(id string) (*cq.Scan, error) {
+		if id == "torn" {
+			return nil, fmt.Errorf("load scan checkpoint: %w", cq.ErrCheckpointCorrupt)
+		}
+		return good, nil
+	}
+	listed := listScans(mustConfig(t, values{}), []string{"torn", "good"}, load)
+	if len(listed) != 2 {
+		t.Fatalf("unreadable scan dropped: %v", listed)
+	}
+	torn := listed[0].(map[string]any)
+	if torn["scan_id"] != "torn" || torn["status"] != "unreadable" || !strings.Contains(torn["last_error"].(string), "no valid checkpoint") || torn["route"] != scanUnreadable {
+		t.Fatalf("unreadable scan not described: %v", torn)
+	}
+	result, err := advanceScans([]string{"torn", "good"}, load, func(s *cq.Scan) (any, error) { return map[string]any{}, nil })
+	if err != nil {
+		t.Fatalf("one unreadable scan stopped the schedule: %v", err)
+	}
+	out := result.(map[string]any)
+	if out["advanced"] != "good" || len(out["unreadable"].([]any)) != 1 {
+		t.Fatalf("advance: %v", out)
+	}
+}
+
+func TestAMissingHostClockIsATypedRefusal(t *testing.T) {
+	if _, err := hostNow(sdk.Call{}); reasonOf(err) != "HOST_CLOCK_UNAVAILABLE" {
+		t.Fatalf("missing clock: %v", err)
+	}
+	cfg := mustConfig(t, values{"backend": "local", "local_judge_url": "https://fixture.invalid", "model": "fixed"})
+	j, err := newJudge(cfg, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.bindInvocation(cfg, 0); reasonOf(err) != "HOST_CLOCK_UNAVAILABLE" {
+		t.Fatalf("zero clock: %v", err)
+	}
+}
+
+func TestDirectJudgeStatesItsCallLimit(t *testing.T) {
+	cfg := mustConfig(t, values{"backend": "local", "local_judge_url": "https://fixture.invalid", "model": "fixed"})
+	largest := cfg.maxCalls()/3*cfg.chunkBytes() - 1
+	at := func(n int) []sdk.Object {
+		raw, _ := json.Marshal([]any{map[string]any{"ref": "a.go", "text": strings.Repeat("x", n)}})
+		items, _ := sdk.ObjectArray(raw)
+		return items
+	}
+	if _, err := judgeBudget(cfg, at(largest)); err != nil {
+		t.Fatalf("the stated largest text refused: %v", err)
+	}
+	_, err := judgeBudget(cfg, at(largest+1))
+	if reasonOf(err) != "OPERATION_ARGUMENT_INVALID" || !strings.Contains(err.Error(), fmt.Sprintf("at most %d bytes", largest)) {
+		t.Fatalf("limit not stated: %v", err)
 	}
 }

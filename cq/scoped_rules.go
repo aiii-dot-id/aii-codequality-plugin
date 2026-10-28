@@ -86,15 +86,16 @@ func scopedRules(fs FS, base, dir string) (ign, attrs []rule, err error) {
 					continue
 				}
 				line = strings.TrimRight(line, " \t\r")
-				isAttr := name == ".gitattributes"
-				r, e := scopedRule(line, scope, isAttr)
+				var rs []rule
+				if name == ".gitattributes" {
+					rs, e = attributeRules(line, scope)
+					attrs = append(attrs, rs...)
+				} else {
+					rs, e = scopedRule(line, scope, false)
+					ign = append(ign, rs...)
+				}
 				if e != nil {
 					return nil, nil, fmt.Errorf("rule file %q line %d: %w", file, n+1, e)
-				}
-				if isAttr {
-					attrs = append(attrs, r)
-				} else {
-					ign = append(ign, r)
 				}
 			}
 		}
@@ -102,42 +103,87 @@ func scopedRules(fs FS, base, dir string) (ign, attrs []rule, err error) {
 	return ign, attrs, nil
 }
 
-func scopedRule(line, scope string, attr bool) (rule, error) {
-	pattern := line
-	if attr {
-		parts := strings.Fields(line)
-		if len(parts) < 2 || strings.TrimLeft(line, " \t\r") != line {
-			return rule{}, fmt.Errorf("unsupported attribute syntax")
+var exclusionAttributes = map[string]bool{"linguist-vendored": true, "linguist-generated": true, "linguist-documentation": true}
+
+func attributeRules(line, scope string) ([]rule, error) {
+	fields := strings.Fields(line)
+	type state struct {
+		name string
+		set  bool
+	}
+	var states []state
+	for _, a := range fields[1:] {
+		prefix, rest := "", a
+		if strings.HasPrefix(a, "-") || strings.HasPrefix(a, "!") {
+			prefix, rest = a[:1], a[1:]
 		}
-		for _, a := range parts[1:] {
-			if vendoredAttr("x "+a) != "x" {
-				return rule{}, fmt.Errorf("unsupported attribute semantics")
-			}
-		}
-		pattern = vendoredAttr(line)
-		if strings.HasPrefix(pattern, "!") || strings.HasSuffix(pattern, "/") {
-			return rule{}, fmt.Errorf("unsupported attribute pattern")
+		name, value, valued := strings.Cut(rest, "=")
+		switch {
+		case !strings.HasPrefix(name, "linguist-"):
+			continue
+		case strings.HasPrefix(fields[0], "[attr]"):
+			return nil, fmt.Errorf("unsupported linguist attribute in a macro")
+		case name == "linguist-language" || name == "linguist-detectable":
+			continue
+		case !exclusionAttributes[name]:
+			return nil, fmt.Errorf("unsupported linguist attribute %q", name)
+		case prefix == "" && (!valued || value == "true"):
+			states = append(states, state{name, true})
+		case prefix == "" && value == "false", prefix != "" && !valued:
+			states = append(states, state{name, false})
+		default:
+			return nil, fmt.Errorf("unsupported linguist attribute value %q", a)
 		}
 	}
+	if len(states) == 0 {
+		return nil, nil
+	}
+	pattern := fields[0]
+	if strings.HasPrefix(pattern, "!") || strings.HasSuffix(pattern, "/") {
+		return nil, fmt.Errorf("unsupported attribute pattern")
+	}
+	base, err := scopedRule(pattern, scope, true)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]rule, 0, len(states))
+	for _, st := range states {
+		r := base[0]
+		r.attr, r.neg = st.name, !st.set
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func scopedRule(pattern, scope string, attr bool) ([]rule, error) {
 	p := strings.TrimPrefix(pattern, "!")
 	p = strings.TrimSuffix(strings.TrimPrefix(p, "/"), "/")
 	if p == "" {
-		return rule{}, fmt.Errorf("empty rule pattern")
+		return nil, fmt.Errorf("empty rule pattern")
 	}
-	for _, ch := range p {
-		if ch <= ' ' || ch >= 127 || strings.ContainsRune("\\\"[]", ch) {
-			return rule{}, fmt.Errorf("unsupported pattern character or escaping")
+	for i := 0; i < len(p); i++ {
+		ch := p[i]
+		if ch == '[' {
+			n, ok := charClass(p[i:])
+			if !ok {
+				return nil, fmt.Errorf("unsupported character class")
+			}
+			i += n - 1
+			continue
+		}
+		if ch < ' ' || ch >= 127 || strings.IndexByte("\\\"]", ch) >= 0 {
+			return nil, fmt.Errorf("unsupported pattern character or escaping")
 		}
 	}
 	for _, component := range strings.Split(p, "/") {
 		if component == "" || component == "." || component == ".." ||
 			(strings.Contains(component, "**") && component != "**") {
-			return rule{}, fmt.Errorf("unsupported pattern component")
+			return nil, fmt.Errorf("unsupported pattern component")
 		}
 	}
 	rules, err := compileRules([]string{pattern})
 	if err != nil {
-		return rule{}, err
+		return nil, err
 	}
 	r := rules[0]
 	rx := r.rx.String()
@@ -148,5 +194,19 @@ func scopedRule(line, scope string, attr bool) (rule, error) {
 		rx = "^" + regexp.QuoteMeta(scope+"/") + strings.TrimPrefix(rx, "^")
 	}
 	r.rx, err = regexp.Compile(rx)
-	return r, err
+	return []rule{r}, err
+}
+
+func charClass(p string) (n int, ok bool) {
+	i := 1
+	if i < len(p) && (p[i] == '!' || p[i] == '^') {
+		i++
+	}
+	start := i
+	for ; i < len(p) && p[i] != ']'; i++ {
+		if p[i] <= ' ' || p[i] >= 127 || strings.IndexByte("\\[/\"", p[i]) >= 0 {
+			return 0, false
+		}
+	}
+	return i + 1, i < len(p) && i > start
 }

@@ -55,6 +55,38 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 		recs = append(recs, r)
 		return nil
 	}
+
+	localize := func(r Record, body Chunk) error {
+		_, _, _, marks := BlankComments(body.Text, t.Langs[lang])
+		found := append([]Finding(nil), r.Findings...)
+		calls, hits, _, kept, err := locate(j, c, lang, backend, body, marks, found)
+		r.Calls += calls
+		r.Cached += hits
+		if !kept {
+			r.Uncached++
+		}
+		switch {
+		case errors.Is(err, ErrProgress):
+			return err
+		case errors.Is(err, ErrRetryExhausted):
+			for k := range found {
+				found[k].LocationReason = "localization_failed"
+			}
+		case errors.Is(err, ErrJudge) || errors.Is(err, ErrKey):
+			for i := range recs {
+				if recs[i].ID == r.ID {
+					recs[i].Calls = r.Calls
+				}
+			}
+			return err
+		case err != nil:
+			for k := range found {
+				found[k].LocationReason = "localization_failed"
+			}
+		}
+		r.Findings = found
+		return emit(r)
+	}
 	for wi, w := range windows {
 		batteries := []struct {
 			name, field string
@@ -96,6 +128,11 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 
 				old.Calls, old.Cached, old.Uncached = 0, 0, 0
 				recs = append(recs, old)
+				if localizationPending(old) {
+					if err := localize(old, battery.body); err != nil {
+						return recs, err
+					}
+				}
 				continue
 			}
 			if battery.name == "code" && len(strings.TrimSpace(battery.body.Text)) < MinBlankedBytes {
@@ -141,6 +178,10 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 			if err == nil && !hit && keep(c, key(), r.Answers) != nil {
 				r.Uncached++
 			}
+			if errors.Is(err, ErrKey) {
+
+				return recs, err
+			}
 			if err != nil {
 				r.ReasonCodes = append(r.ReasonCodes, "battery_failed")
 				var request *RequestError
@@ -155,30 +196,27 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 			if err != nil {
 				return recs, err
 			}
-			if battery.name == "code" && len(r.Findings) > 0 {
 
-				_, _, _, marks := BlankComments(battery.body.Text, t.Langs[lang])
-				calls, hits, _, kept, locationErr := locate(j, c, lang, backend, battery.body, marks, r.Findings)
-				r.Calls += calls
-				r.Cached += hits
-				if !kept {
-					r.Uncached++
-				}
-				if errors.Is(locationErr, ErrProgress) {
-					return recs, locationErr
-				}
-				if locationErr != nil {
-					for k := range r.Findings {
-						r.Findings[k].LocationReason = "localization_failed"
-					}
-				}
-				if err := emit(r); err != nil {
+			if localizationPending(r) {
+				if err := localize(r, battery.body); err != nil {
 					return recs, err
 				}
 			}
 		}
 	}
 	return recs, nil
+}
+
+func localizationPending(r Record) bool {
+	if r.Battery != "code" {
+		return false
+	}
+	for _, f := range r.Findings {
+		if f.Where == "" && f.LocationReason == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func answersComplete(a map[string]float64, items []Item) bool {

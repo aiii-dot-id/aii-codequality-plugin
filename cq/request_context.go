@@ -53,7 +53,7 @@ func windowQuestions(items []Item, field string, body Chunk) map[string]any {
 	questions := Questions(items, field)
 	for _, q := range questions {
 		fields := q.(map[string]any)
-		fields["instructions"] = fmt.Sprintf("Original-source lines %d–%d. %s", body.FirstLine, body.LastLine, fields["instructions"])
+		fields["instructions"] = fmt.Sprintf(questionLines, body.FirstLine, body.LastLine, fields["instructions"])
 	}
 	return questions
 }

@@ -1,6 +1,67 @@
 # Changelog
 
-## 0.1.14 — bounded review queue
+## 0.1.15 — unreleased: 0.1.14's regressions corrected
+
+The version is set for the AII OS 0.2.0 release train; the ladder signs and publishes it.
+**Live semantic pilot: NOT RUN.**
+
+- **Ordinary repositories scan again.** 0.1.14 refused every `.gitattributes` attribute but a
+  positive linguist exclusion, and every `.gitignore` character class, so `scan start` failed on
+  aii-os (`gradlew.bat -whitespace`) and the SDK (`*.go text eol=lf`). Attributes without
+  exclusion meaning are ignored again, as before 0.1.14. `linguist-vendored`, `-generated` and
+  `-documentation` resolve per attribute, last match winning, including `-x`, `!x` and `=false`;
+  linguist forms the parser cannot interpret still fail closed. Ignore rules read classes and
+  ranges (`*.py[cod]`, `[!a]`). Over 820 rule files the old grammar refused 215 lines; this one 6.
+- **A refused text no longer ends a scan.** Every 403 was read as an authentication failure and
+  any non-retryable failure was persisted as a block, so one file Jev's edge refused ended the
+  scan for good. A 403 page and every other 4xx but authentication now record that file as
+  `refused_by_judge` and the scan moves on, as before 0.1.14. A 401, or a 403 answered in JSON,
+  stops the step as `JUDGE_AUTHENTICATION_REQUIRED` with the operator's route; the scan keeps its
+  place and continues once the key works.
+- **An outage no longer ends a scan.** Nine unavailable attempts (about 90 minutes at the
+  schedule) blocked it permanently. Exhausting the retry budget now ends that round of backoff;
+  the next step retries. A transient failure of optional localization is asked again on resume
+  rather than recorded as `localization_failed` at once; after one unanswered retry round it is
+  recorded so, and the scan moves on.
+- **Scans 0.1.14 already blocked stay blocked.** A scan 0.1.14 persisted as `request_blocked`
+  (for a refused text, an authentication failure or exhausted retries) is not reopened; its
+  results remain reportable. Start a new scan of the same folder.
+- **A revoked key appends nothing per step.** An authentication stop leaves the file pending
+  without a failed-battery record or coverage event; the route is in `last_error`.
+- **`retry_budget` is a setting** (8 by default, as before; 0–32). How much of a journal a report
+  ranks stays a named constant, lowered from 2 MiB to 1 MiB: on the 64 MiB guest worker a report
+  retaining 2 MiB of real scan records traps, so no larger value is safe to offer.
+- **A step's cost is its own work.** Each step validated the whole journal, twice in some steps;
+  on the 64 MiB guest worker that took 16.5 s at an 8 MiB journal and trapped out of memory at
+  16 MiB, so a scan stopped advancing long before its 48 MiB cap. A step now validates the suffix
+  after its checkpoint: about 0.02 s of validation at any size, 0.3 s for a whole step at 47 MiB.
+- **A report answers on any scan the plugin can step.** Every report read and decoded the whole
+  journal and trapped the guest once it passed 2 MiB of real scan records. A report now reads only the prefix it ranks
+  and the uncommitted suffix past the checkpoint (validated; a torn tail fails closed); its
+  cursors bind the ranked prefix and the journal's length. 2.3–4.1 s per report at 5, 16 and
+  47 MiB journals. `report_complete=false` and the note still say when only a prefix is ranked.
+- **Nothing silently vanishes.** A scan whose state or checkpoint cannot be loaded is listed as
+  `unreadable` with its route, and scheduled advancement steps the next scan instead of failing.
+  A crashed start's leftovers no longer answer `SCAN_EXISTS` forever, and retention deletes a
+  scan's state last. A missing host clock is refused as `HOST_CLOCK_UNAVAILABLE`. A direct
+  `judge` refusal states the largest text one invocation's calls allow.
+- **Typed codes of a failed direct `judge`:** `JUDGE_UNAVAILABLE` (429, 5xx, no answer, exhausted
+  retries — 0.1.14 named it `JUDGE_JUDGE_UNAVAILABLE`), `JUDGE_AUTHENTICATION_REQUIRED` (401, or
+  a 403 in JSON; 0.1.13 said `JUDGE_KEY_REFUSED`), and for a refused text `JUDGE_REFUSED`,
+  `JUDGE_REQUEST_VALIDATION`, `JUDGE_REQUEST_BODY_LIMIT` or `JUDGE_MODEL_CONTEXT_LIMIT` (0.1.13
+  said `JUDGE_REFUSED_TEXT`). Neither AII OS nor the catalog reads these names.
+- **Every report shape says when it ranks only a prefix.** `review_queue` and `coverage` now
+  carry the same `note` and route as summary and findings.
+- **Known limit, stated:** refusal versus authentication rests on the status and on whether a
+  403 body is JSON, unverified against real Jev bodies. A JSON firewall 403 reads as an
+  authentication stop; a revoked key answered with an HTML 403 marks every file refused and
+  finishes `done`. A summary now states `refused_by_judge` and the files judged whenever any were
+  refused.
+- The unreachable alias memo (`cache/models.json`) and status mapping are removed; model-read and
+  judge-sent sentences live in `words.go` and `cq/words.go`; the operation summaries say what the
+  results now contain. The guest harness no longer defaults to an identity's workspace paths.
+
+## 0.1.14 — bounded review queue, released 2026-10-27
 
 These describe source-level changes, not evidence of semantic accuracy. **Live semantic pilot: NOT RUN.**
 

@@ -151,7 +151,7 @@ func DeduplicateRecords(records []Record) []Record {
 
 func BuildReview(records []Record, coverage []Coverage, inventoryComplete, reportComplete bool, lane string) ReviewReport {
 	report := ReviewReport{Policy: ReviewPolicy, Files: []FileReview{}, Gaps: []Coverage{}, InventoryComplete: inventoryComplete && reportComplete, ReportComplete: reportComplete,
-		Caveat: "Model allegations, not confirmed defects. Severity/category ordering is an unvalidated candidate. Legacy scores are descriptive, not safety verdicts. Historical calibration is not current-model accuracy."}
+		Caveat: reviewCaveat}
 	cov := map[string]Coverage{}
 	for _, c := range coverage {
 		c.Ref = path.Clean(c.Ref)
@@ -259,7 +259,7 @@ func BuildReview(records []Record, coverage []Coverage, inventoryComplete, repor
 			continue
 		}
 		f.SelectionReason = selectionReason(f, lane)
-		f.NextCheck = "Inspect the cited source with callers, ownership contracts and tests; confirm the consequence or reject the allegation."
+		f.NextCheck = reviewNextCheck
 		report.Files = append(report.Files, f)
 	}
 	for _, c := range cov {
@@ -337,7 +337,7 @@ func selectionReason(f FileReview, lane string) string {
 	}
 	rank, n := lanePriority(f, lane)
 	severity := []string{"low", "medium", "high"}[max(0, rank)]
-	return fmt.Sprintf("%s candidate: maximum %s catalogue severity; %d distinct flagged categories; assessment %s. Category breadth is not a defect count.", lane, severity, n, f.Status)
+	return fmt.Sprintf(reviewSelection, lane, severity, n, f.Status)
 }
 func gapPriority(c Coverage) int {
 	if c.Disposition == "excluded" {

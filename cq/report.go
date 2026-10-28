@@ -109,7 +109,7 @@ func Summary(recs []Record, worst int) map[string]any {
 	return map[string]any{"chunks_judged": all.chunks, "lines": all.lines, "index": mean(&all), "bands": bands,
 		"languages": langs, "finding_counts": findings, "lead_counts": leads, "faults": Faults(ids), "worst": w,
 		"recommended_shape": "review_queue", "coverage_shape": "coverage",
-		"score_caveat": "Legacy index/bands describe maintainability arithmetic, not correctness. Worst entries are chunks, not distinct files; inspect assessment and coverage separately."}
+		"score_caveat": scoreCaveat}
 }
 
 var severityRank = map[string]int{"low": 0, "medium": 1, "high": 2}

@@ -22,6 +22,17 @@ func (p *JournalProgress) Load(ref string) ([]Record, error) {
 	p.end, p.verified = end, true
 	return DeduplicateRecords(records), nil
 }
+
+func (p *JournalProgress) Verify() error {
+	end, err := p.Journal.Walk(p.Offset, nil)
+	if err != nil {
+		p.verified = false
+		return err
+	}
+	p.end, p.verified = end, true
+	return nil
+}
+
 func (p *JournalProgress) Save(r Record) error {
 	return p.append(JournalEvent{Record: &r})
 }
@@ -30,11 +41,9 @@ func (p *JournalProgress) Cover(c Coverage) error {
 }
 func (p *JournalProgress) append(e JournalEvent) error {
 	if !p.verified {
-		end, err := p.Journal.Walk(0, nil)
-		if err != nil {
+		if err := p.Verify(); err != nil {
 			return err
 		}
-		p.end, p.verified = end, true
 	}
 	end, err := p.Journal.appendAt(p.end, e)
 	if err != nil {

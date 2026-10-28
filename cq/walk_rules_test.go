@@ -43,7 +43,7 @@ func TestWalkRulesRootFailClosed(t *testing.T) {
 			case "unlistable":
 				f.listErr[""] = errors.New("denied")
 			case "unsupported":
-				f.files[".gitignore"] = "[ab].go\n"
+				f.files[".gitignore"] = "\\#literal.go\n"
 			case "symlink":
 				f.dirs[""][0].Symlink = true
 			case "oversize":
@@ -74,7 +74,7 @@ func TestWalkRulesNestedFailureRetainsCursor(t *testing.T) {
 				f.listErr["pkg"] = errors.New("denied")
 				reason = "unlistable_dir"
 			case "unsupported":
-				f.files["pkg/.gitignore"] = "[ab].go\n"
+				f.files["pkg/.gitignore"] = "\\#literal.go\n"
 			}
 			j := &failJudge{}
 			for attempt := 0; attempt < 2; attempt++ {

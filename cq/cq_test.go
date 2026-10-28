@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -408,70 +407,37 @@ func (f *unansweredLocate) Choose(state, qs map[string]any) (map[string]Choice, 
 	return nil, fmt.Errorf("%w: no answer within the 2000 ms this call allowed", ErrJudge)
 }
 
-func TestAnUnansweredLocationRetainsFindingsWithoutRetry(t *testing.T) {
+func TestATransientLocationFailureIsRetriedOnResume(t *testing.T) {
 	tb := table(t)
 	root := t.TempDir()
 	write(t, root, "a.go", "package x\n\nfunc Good(a, b int) int {\n\treturn a + b\n}\n\nfunc Bad(path string) string {\n\tb, _ := os.ReadFile(path)\n\treturn string(b) + \"padding padding padding\"\n}\n")
 	fs := &OSFS{Root: root}
 	c := MemCache{}
+	p := &memoryProgress{}
 	s, _ := NewScan(fs, "cq_3", "src", "", nil, nil, false, 100, 131072)
+	s.Progress = p
 	slow := &unansweredLocate{fakeJudge{p: 0.9}}
 	recs, err := s.Step(tb, fs, slow, c, 12, 50)
-	if err != nil || len(recs) != 2 || s.Status != "done" || len(s.Pending) != 0 || s.LastError != "" || s.FilesJudged != 1 {
-		t.Fatalf("err %v recs %d status %s pending %d last_error %q", err, len(recs), s.Status, len(s.Pending), s.LastError)
-	}
-	if recs[0].Battery != "code" || recs[1].Battery != "docs" || len(recs[0].Findings) != len(CodeItems("go")) || len(recs[1].Answers) != 3 {
-		t.Fatalf("both batteries remain available: %+v", recs)
+	if err != nil || s.Status != "judge_unavailable" || len(s.Pending) != 1 || s.FilesJudged != 0 || len(recs) != 1 || slow.calls != 1 || slow.chosen != 1 {
+		t.Fatalf("err %v recs %d status %s pending %d judged %d calls %d locations %d", err, len(recs), s.Status, len(s.Pending), s.FilesJudged, slow.calls, slow.chosen)
 	}
 	for _, f := range recs[0].Findings {
-		if f.Where != "" || f.LocationReason != "localization_failed" || f.P != 0.9 {
-			t.Fatalf("unlocated finding retained with its reason: %+v", f)
+		if f.Where != "" || f.LocationReason != "" || f.P != 0.9 {
+			t.Fatalf("a transient failure is not a location outcome: %+v", f)
 		}
-	}
-	if calls, _ := recordTotals(recs); calls != 3 || slow.calls != 2 || slow.chosen != 1 {
-		t.Errorf("code, failed localization, docs: %d total calls, %d battery calls, %d locations", calls, slow.calls, slow.chosen)
 	}
 	retry := &fakeJudge{p: 0.9}
-	if more, err := s.Step(tb, fs, retry, c, 3, 50); err != nil || len(more) != 0 || retry.calls != 0 || retry.chosen != 0 {
-		t.Fatalf("finished file was retried: %v %+v, battery calls %d locations %d", err, more, retry.calls, retry.chosen)
+	recs, err = s.Step(tb, fs, retry, c, 12, 50)
+	if err != nil || s.Status != "done" || s.FilesJudged != 1 || retry.calls != 1 || retry.chosen != 1 || len(recs) != 2 {
+		t.Fatalf("resume: err %v status %s judged %d battery calls %d locations %d recs %d", err, s.Status, s.FilesJudged, retry.calls, retry.chosen, len(recs))
 	}
-}
-
-type refuseJudge struct{ fakeJudge }
-
-func (f *refuseJudge) Ask(state, qs map[string]any) (map[string]float64, error) {
-	code, _ := state["code"].(string)
-	source, _ := state["source"].(string)
-	if strings.Contains(code+source, "python -c") {
-		return nil, ErrRefused
+	if recs[0].Battery != "code" || recs[1].Battery != "docs" || len(recs[0].Findings) != len(CodeItems("go")) {
+		t.Fatalf("both batteries available: %+v", recs)
 	}
-	return f.fakeJudge.Ask(state, qs)
-}
-
-func TestScanSkipsTextsTheJudgeRefuses(t *testing.T) {
-	tb := table(t)
-	root := t.TempDir()
-	write(t, root, "a.go", goFile)
-	write(t, root, "b.go", strings.Replace(goFile, "padding", "python -c", 1))
-	write(t, root, "c.go", goFile+"\n")
-	fs := &OSFS{Root: root}
-	s, _ := NewScan(fs, "cq_3", "src", "", nil, nil, false, 100, 131072)
-	recs, err := s.Step(tb, fs, &refuseJudge{fakeJudge{p: 0.1}}, MemCache{}, 6, 50)
-	if err != nil || s.Status != "done" || len(recs) != 5 || s.Excluded["refused_by_judge"] != 1 || len(s.Refused) != 1 || s.Refused[0] != "b.go" {
-		t.Fatalf("err %v status %s recs %d excluded %v refused %v", err, s.Status, len(recs), s.Excluded, s.Refused)
-	}
-
-	refused := 0
-	for _, r := range recs {
-		if r.Ref == "b.go" {
-			refused++
-			if a := AssessmentOf(r); a.Status != "unknown" || a.Missing == 0 {
-				t.Fatalf("refusal misrepresented: %+v", a)
-			}
+	for _, f := range recs[0].Findings {
+		if f.Where == "" && f.LocationReason == "" {
+			t.Fatalf("location not retried: %+v", f)
 		}
-	}
-	if refused != 1 {
-		t.Fatalf("refused records = %d", refused)
 	}
 }
 
@@ -537,35 +503,6 @@ func TestModelChoicesReadJevsList(t *testing.T) {
 	for _, bad := range []string{`not json`, `{"models":[]}`, `{"models":[{"name":""}]}`} {
 		if _, err := ModelChoices([]byte(bad)); err == nil {
 			t.Errorf("%s: refused", bad)
-		}
-	}
-}
-
-func TestJudgeReplyReadsTheStatus(t *testing.T) {
-	answers := []byte(`{"answers":{"EH-01":{"type":"noul","noul":0.83}}}`)
-	if _, err := JudgeReply(200, answers); err != nil {
-		t.Fatalf("200 carries answers: %v", err)
-	}
-	for _, c := range []struct {
-		status int
-		body   string
-		want   error
-	}{
-		{0, "", ErrJudge}, {429, "{}", ErrJudge}, {500, "", ErrJudge}, {503, "<html>", ErrJudge},
-		{400, `{"error":"state too large"}`, ErrRefused}, {413, "", ErrRefused}, {422, "{}", ErrRefused},
-		{403, "<html>Attention Required</html>", ErrRefused},
-		{401, `{"error":"bad key"}`, ErrKey}, {403, `{"error":"forbidden"}`, ErrKey},
-	} {
-		_, err := JudgeReply(c.status, []byte(c.body))
-		switch {
-		case err == nil:
-			t.Fatalf("%d must fail", c.status)
-		case c.want != nil && !errors.Is(err, c.want):
-			t.Fatalf("%d %q: got %v, want %v", c.status, c.body, err, c.want)
-		case c.want == ErrKey && (errors.Is(err, ErrJudge) || errors.Is(err, ErrRefused)):
-			t.Fatalf("%d %q is the key being refused, neither retried nor passed over: %v", c.status, c.body, err)
-		case !strings.Contains(err.Error(), strconv.Itoa(c.status)):
-			t.Fatalf("the status is kept in the error: %v", err)
 		}
 	}
 }
@@ -764,19 +701,13 @@ func Bad(path string) string {
 	}
 }
 
-func TestChoiceReplyReadsTheChoiceAndItsConfidence(t *testing.T) {
+func TestParseChoicesReadsTheChoiceAndItsConfidence(t *testing.T) {
 	body := []byte(`{"model":"jev-1.13.0","answers":{"EH-01":{"type":"choice","choice":"lines 9-11: func Bad() {","confidence":0.87,"probabilities":{"lines 9-11: func Bad() {":0.9,"lines 1-3: package x":0.1}}}}`)
-	got, err := ChoiceReply(200, body)
+	got, err := ParseChoices(body)
 	if err != nil || got["EH-01"].Choice != "lines 9-11: func Bad() {" || got["EH-01"].Confidence != 0.87 {
 		t.Fatalf("%v %+v", err, got)
 	}
-	if _, err := ChoiceReply(200, []byte(`{"answers":{"EH-01":{"type":"choice","choice":"x"}}}`)); !errors.Is(err, ErrJudge) {
+	if _, err := ParseChoices([]byte(`{"answers":{"EH-01":{"type":"choice","choice":"x"}}}`)); !errors.Is(err, ErrJudge) {
 		t.Fatalf("an answer without confidence is a judge failure: %v", err)
-	}
-	if _, err := ChoiceReply(503, nil); !errors.Is(err, ErrJudge) {
-		t.Fatalf("503 is Jev unavailable: %v", err)
-	}
-	if _, err := ChoiceReply(401, []byte(`{"error":"key"}`)); !errors.Is(err, ErrKey) {
-		t.Fatalf("401 is the key refused: %v", err)
 	}
 }
