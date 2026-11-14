@@ -10,6 +10,23 @@
     "reason": {
       "type": "string",
       "description": "why no scan was stepped"
+    },
+    "more_work": {
+      "type": "boolean",
+      "description": "a scan is unfinished after this step"
+    },
+    "progress": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "a count greater than the last only when this step saved work; absent when it saved none"
+    },
+    "retry_not_before": {
+      "type": "string",
+      "description": "RFC 3339, UTC: the earliest time the judge may be asked again"
+    },
+    "scan_progress": {
+      "type": "string",
+      "description": "the scan's progress in words"
     }
   },
   "required": [

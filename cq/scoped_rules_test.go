@@ -51,6 +51,16 @@ func (f *scopedRulesFS) Read(file string, max int64) ([]byte, error) {
 	return []byte(b), nil
 }
 
+func (f *scopedRulesFS) ReadAt(file string, off int64, n int) ([]byte, bool, error) {
+	b, err := f.Read(file, MaxSourceBytes)
+	if err != nil {
+		return nil, false, err
+	}
+	off = min(off, int64(len(b)))
+	end := min(off+int64(n), int64(len(b)))
+	return b[off:end], end == int64(len(b)), nil
+}
+
 func TestScopedRulesNestedExcludesAndNegation(t *testing.T) {
 	f := &scopedRulesFS{
 		dirs: map[string][]Entry{

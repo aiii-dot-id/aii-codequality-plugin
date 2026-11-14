@@ -17,6 +17,23 @@ type Judge interface {
 	Model() string
 }
 
+func (c Choice) offered(options map[string]string) Choice {
+	var p map[string]float64
+	for k, v := range c.Probabilities {
+		if k == "cannot_localize" || options[k] != "" {
+			if p == nil {
+				p = map[string]float64{}
+			}
+			p[k] = v
+		}
+	}
+	c.Probabilities = p
+	if c.Choice != "cannot_localize" && options[c.Choice] == "" {
+		c.Choice = Clip(c.Choice, 160)
+	}
+	return c
+}
+
 type Choice struct {
 	Choice        string             `json:"choice"`
 	Confidence    float64            `json:"confidence"`
@@ -24,13 +41,26 @@ type Choice struct {
 }
 
 type Cache interface {
-	Get(key string) (json.RawMessage, bool)
+	Get(key string) (answers json.RawMessage, ok bool, err error)
 	Put(key string, answers json.RawMessage) error
 }
+
+var ErrCache = errors.New("the answer cache could not be read")
 
 var ErrTooLarge = errors.New("file is larger than the limit it is read to")
 
 var ErrJudge = errors.New("judge unavailable")
+
+var ErrStepCalls = errors.New("the calls this step planned are spent")
+
+var ErrNotSent = errors.New("the call was not sent")
+
+func sentCalls(err error) int {
+	if errors.Is(err, ErrNotSent) {
+		return 0
+	}
+	return 1
+}
 
 var ErrRefused = errors.New("judge refused this text")
 
@@ -91,6 +121,8 @@ type Record struct {
 	Model           string             `json:"model"`
 	Backend         string             `json:"backend,omitempty"`
 	Uncached        int                `json:"uncached,omitempty"`
+
+	Shape *FileShape `json:"shape,omitempty"`
 }
 
 func Band(index int) string {
@@ -205,7 +237,7 @@ func JudgeText(t *Table, j Judge, c Cache, ref, lang, text string) ([]Record, er
 }
 
 func JudgeTextChunked(t *Table, j Judge, c Cache, ref, lang, text string, chunk int) ([]Record, error) {
-	return JudgeTextProgress(t, j, c, ref, lang, text, chunk, nil, nil)
+	return JudgeTextProgress(t, j, c, ref, lang, text, chunk, nil, nil, false)
 }
 
 func linesOf(marks []bool, ch Chunk) []bool {
@@ -274,7 +306,7 @@ func locate(j Judge, c Cache, lang, backend string, ch Chunk, inString []bool, f
 	kept = true
 	if !hit {
 		if got, err = j.Choose(map[string]any{"language": lang, "units": state}, questions); err != nil {
-			return 1, 0, "", true, err
+			return sentCalls(err), 0, "", true, err
 		}
 		model = j.Model()
 		kept = keep(c, CacheKey(asked, lang, KeyModel(backend, model), "locate"), got) == nil
@@ -284,6 +316,7 @@ func locate(j Judge, c Cache, lang, backend string, ch Chunk, inString []bool, f
 		if !ok {
 			continue
 		}
+		a = a.offered(state)
 		findings[k].LocationAnswer = &a
 		switch {
 		case a.Choice == "cannot_localize":
@@ -309,7 +342,10 @@ func cached(c Cache, key string, v any) (bool, error) {
 	if c == nil {
 		return false, nil
 	}
-	raw, ok := c.Get(key)
+	raw, ok, err := c.Get(key)
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", ErrCache, err)
+	}
 	if !ok {
 		return false, nil
 	}

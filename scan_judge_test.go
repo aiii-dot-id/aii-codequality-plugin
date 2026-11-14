@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,7 +94,10 @@ type cacheProbe struct {
 	reads int
 }
 
-func (c *cacheProbe) Get(key string) (json.RawMessage, bool) { c.reads++; return c.MemCache.Get(key) }
+func (c *cacheProbe) Get(key string) (json.RawMessage, bool, error) {
+	c.reads++
+	return c.MemCache.Get(key)
+}
 func TestScanFreshAliasBypassesCacheThenUsesConcreteModel(t *testing.T) {
 	cfg := config{backend: backendJev, model: "jev-latest", handle: "test-handle", ints: defaultInts()}
 	j, _, durable := scanJudgeT(t, cfg, nil, 1000)
@@ -396,10 +400,14 @@ func TestAFailingLocalizationEndsAfterOneRetryRound(t *testing.T) {
 	if s.Status != "done" || s.FilesJudged != 1 || located != 3 {
 		t.Fatalf("status %s judged %d location attempts %d (want the initial call and two retries)", s.Status, s.FilesJudged, located)
 	}
-	records, _, _, _, err := cq.JournalReport(&cq.Journal{Store: store, Path: "journal"}, 1<<20, 0)
-	if err != nil {
+	var records []cq.Record
+	if _, err := cq.FoldJournal(&cq.Journal{Store: store, Path: "journal"}, func(run *cq.FileRun) error {
+		records = append(records, run.Records...)
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
+	records = cq.DeduplicateRecords(records)
 	docs := false
 	for _, r := range records {
 		if r.Battery == "docs" {
@@ -431,5 +439,54 @@ func TestARepeatedAuthStopAppendsNothing(t *testing.T) {
 	}
 	if sizes[1] != sizes[0] || sizes[2] != sizes[0] {
 		t.Fatalf("each auth stop appended to the journal: sizes %v", sizes)
+	}
+}
+
+func TestA171KiBGoFileIsJudgedAtTheDefault(t *testing.T) {
+	cfg := config{backend: backendLocal, localBase: "https://fixture.invalid", model: "fixed", ints: defaultInts()}
+	var src strings.Builder
+	src.WriteString("package big\n\n")
+	for i := 0; src.Len() < 171<<10; i++ {
+		fmt.Fprintf(&src, "// F%d returns its argument plus %d, with a comment long enough to be a real one.\nfunc F%d(x int) int {\n\tif x < 0 {\n\t\treturn -x + %d\n\t}\n\treturn x + %d\n}\n\n", i, i, i, i, i)
+	}
+	if n := src.Len(); n <= 170<<10 || n > cq.SegmentBytes {
+		t.Fatalf("fixture %d B, a segment %d", n, cq.SegmentBytes)
+	}
+	s, fs, store := oneFileScan(t, cfg, src.String())
+	s.MaxFileBytes = cq.SegmentBytes
+	send := func(url string, o *sdk.HTTPOptions) (sdk.HTTPResult, error) {
+		var req struct {
+			Questions map[string]json.RawMessage `json:"questions"`
+		}
+		_ = json.Unmarshal([]byte(o.Body), &req)
+		answers := map[string]any{}
+		for id := range req.Questions {
+			answers[id] = map[string]any{"type": "noul", "noul": 0.05}
+		}
+		body, _ := json.Marshal(map[string]any{"model": "fixed", "answers": answers})
+		return sdk.HTTPResult{Status: 200, Body: body}, nil
+	}
+	now := int64(1000)
+	for step := 0; step < 200 && s.Status == "running"; step++ {
+		if err := stepOnce(t, cfg, s, fs, store, now, send); err != nil {
+			t.Fatalf("step %d: %v", step, err)
+		}
+		now++
+	}
+	if s.Status != "done" || s.FilesJudged != 1 || s.Excluded["oversize"] != 0 {
+		t.Fatalf("status %s, judged %d, excluded %v", s.Status, s.FilesJudged, s.Excluded)
+	}
+	var cov *cq.Coverage
+	j := &cq.Journal{Store: store, Path: "journal"}
+	if _, err := j.Walk(0, func(e cq.JournalEvent) error {
+		if e.Coverage != nil && e.Coverage.Ref == "a.go" {
+			cov = e.Coverage
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if cov == nil || cov.Disposition != "complete" || cov.ExpectedChunks < 2 || cov.ExpectedChunks != cov.CompletedChunks {
+		t.Fatalf("coverage: %+v", cov)
 	}
 }

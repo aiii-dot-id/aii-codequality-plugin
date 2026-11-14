@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -12,16 +14,9 @@ import (
 )
 
 func TestNarrowReleaseFileCap(t *testing.T) {
-	for _, n := range []int64{1024, 128 << 10, 192 << 10} {
-		c, err := configFrom(values{"max_file_bytes": int(n)})
-		if err != nil || c.maxFileBytes() != n {
-			t.Fatalf("supported cap %d: %v", n, err)
-		}
-	}
-	for _, n := range []int64{(192 << 10) + 1, 1 << 20} {
-		_, err := configFrom(values{"max_file_bytes": int(n)})
-		if reasonOf(err) != "JUDGE_CONFIGURATION_INVALID" {
-			t.Fatalf("unsupported cap %d: %v", n, err)
+	for _, n := range []int{1024, 1 << 20, 1 << 30} {
+		if _, err := configFrom(values{"max_file_bytes": n}); err != nil {
+			t.Fatalf("a retired max_file_bytes %d refused: %v", n, err)
 		}
 	}
 }
@@ -43,8 +38,13 @@ func TestExperimentalScanIsReportOnlyWithoutMutation(t *testing.T) {
 }
 
 func TestDirectJudgeByteCap(t *testing.T) {
-	for _, cap := range []int{128 << 10, 192 << 10} {
-		cfg := mustConfig(t, values{"max_file_bytes": cap, "chunk_bytes": 131072})
+	for _, set := range []int{0, 1024, 128 << 10} {
+		cap := cq.SegmentBytes
+		vals := values{"chunk_bytes": 131072}
+		if set != 0 {
+			vals["max_file_bytes"] = set
+		}
+		cfg := mustConfig(t, vals)
 		for _, unit := range []string{"a", "界"} {
 			exact := strings.Repeat(unit, cap/len(unit)) + strings.Repeat("a", cap%len(unit))
 			for _, extra := range []string{"", "x"} {
@@ -58,7 +58,7 @@ func TestDirectJudgeByteCap(t *testing.T) {
 					if err != nil || budget <= 0 {
 						t.Fatalf("exact %d %q: %d %v", cap, unit, budget, err)
 					}
-				} else if reasonOf(err) != "OPERATION_ARGUMENT_INVALID" || !strings.Contains(err.Error(), "UTF-8 bytes exceeds max_file_bytes") {
+				} else if reasonOf(err) != "OPERATION_ARGUMENT_INVALID" || !strings.Contains(err.Error(), "not a file skip") {
 					t.Fatalf("cap+1 %d %q must fail byte guard, not call budget: %v", cap, unit, err)
 				}
 			}
@@ -129,14 +129,14 @@ func TestAdvanceSkipsReportOnlyWithoutMutation(t *testing.T) {
 func TestReportsSurviveInvalidAssessmentSettings(t *testing.T) {
 	for _, shape := range []string{"list", "summary", "records", "review_queue", "coverage"} {
 		t.Run(shape, func(t *testing.T) {
-			vals := values{"max_file_bytes": 1 << 20}
+			vals := values{"chunk_bytes": 1}
 			out, err := reportWithSettings(vals, func(cfg config) (any, error) {
 				if cfg.maxCalls() != 0 {
 					t.Fatal("invented progress configuration")
 				}
 				view := scanView(cfg, &cq.Scan{ID: "retained", Version: cq.RecordVersion, MaxFileBytes: 128 << 10, Status: "running", Chunks: 3})
-				if _, ok := view["steps_left"]; ok {
-					t.Fatal("unfounded estimate")
+				if _, ok := view["progress"]; ok {
+					t.Fatal("settings that cannot step a scan say how it advances")
 				}
 				return map[string]any{"shape": shape, "scan": view, "retained": "evidence"}, nil
 			})
@@ -144,16 +144,16 @@ func TestReportsSurviveInvalidAssessmentSettings(t *testing.T) {
 				t.Fatal(err)
 			}
 			result := out.(map[string]any)
-			if result["retained"] != "evidence" || !strings.Contains(result["assessment_configuration_error"].(string), "max_file_bytes") {
+			if result["retained"] != "evidence" || !strings.Contains(result["assessment_configuration_error"].(string), "chunk_bytes") {
 				t.Fatalf("lost evidence/warning: %v", result)
 			}
-			if vals["max_file_bytes"] != 1<<20 {
+			if vals["chunk_bytes"] != 1 {
 				t.Fatal("settings mutated")
 			}
 		})
 	}
 	sentinel := errors.New("journal unreadable")
-	_, err := reportWithSettings(values{"max_file_bytes": 1 << 20}, func(config) (any, error) { return nil, sentinel })
+	_, err := reportWithSettings(values{"chunk_bytes": 1}, func(config) (any, error) { return nil, sentinel })
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("lost report IO failure: %v", err)
 	}
@@ -217,5 +217,93 @@ func TestDirectJudgeStatesItsCallLimit(t *testing.T) {
 	_, err := judgeBudget(cfg, at(largest+1))
 	if reasonOf(err) != "OPERATION_ARGUMENT_INVALID" || !strings.Contains(err.Error(), fmt.Sprintf("at most %d bytes", largest)) {
 		t.Fatalf("limit not stated: %v", err)
+	}
+}
+
+func TestTheReportTakesEveryLaneItsSchemaOffers(t *testing.T) {
+	raw, err := os.ReadFile("schemas/report_in.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Properties struct {
+			Lane struct {
+				Enum []string `json:"enum"`
+			} `json:"lane"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(schema.Properties.Lane.Enum, ",") != strings.Join(cq.ReviewLanes, ",") {
+		t.Fatalf("schema lanes %v, the report's %v", schema.Properties.Lane.Enum, cq.ReviewLanes)
+	}
+	for _, lane := range append([]string{""}, cq.ReviewLanes...) {
+		if !reviewLane(lane) {
+			t.Errorf("the entry point refuses lane %q", lane)
+		}
+	}
+	if reviewLane("everything") {
+		t.Error("the entry point takes a lane the schema does not offer")
+	}
+}
+
+func TestTheEstimateCoversTheFilesJudged(t *testing.T) {
+	s := &cq.Scan{Version: cq.RecordVersion, Status: "done", FilesSeen: 49, FilesJudged: 2, Chunks: 8, Calls: 26, CacheHits: 2, SlopCalls: 8}
+	c := scanView(mustConfig(t, values{}), s)["calls_per_judged_file"].(map[string]any)
+	num := func(v any) float64 { f, _ := strconv.ParseFloat(fmt.Sprint(v), 64); return f }
+	if est, actual := num(c["estimated_before_caching"]), num(c["with_cache_hits"]); est < actual {
+		t.Fatalf("estimated %v a file before caching; the files cost %v", est, actual)
+	}
+	if strings.Contains(callsBeforeCaching, "per judged file") {
+		t.Fatalf("the start leads with a one-window file's cost: %q", callsBeforeCaching)
+	}
+}
+
+func TestAnArgumentAShapeDoesNotUseIsNamed(t *testing.T) {
+	for args, want := range map[string]string{
+		`{"scan_id":"s","shape":"summary","lane":"slop","worst":5}`:            "lane",
+		`{"scan_id":"s","lane":"size"}`:                                        "lane",
+		`{"scan_id":"s","shape":"review_queue","lane":"slop","worst":3}`:       "worst",
+		`{"scan_id":"s","shape":"coverage","lane":"slop","path":"a"}`:          "lane",
+		`{"scan_id":"s","shape":"findings","tier":"all","min_severity":"low"}`: "tier",
+		`{"scan_id":"s","shape":"triage","lane":"slop","limit":4}`:             "",
+		`{"shape":"summary","lane":"slop"}`:                                    "",
+	} {
+		got := ""
+		for _, k := range ignoredArguments(sdk.Object(args)) {
+			got += k.(string)
+		}
+		if got != want {
+			t.Errorf("%s: ignored %q, want %q", args, got, want)
+		}
+	}
+}
+
+func TestARefusalBeforeTheSendIsMarkedNotSent(t *testing.T) {
+	sent := 0
+	send := func(string, *sdk.HTTPOptions) (sdk.HTTPResult, error) {
+		sent++
+		return sdk.HTTPResult{Status: 503}, nil
+	}
+	spent := &hostJudge{at: judgeAt{systemOne: "x"}, configured: "m", model: "m", left: 0, send: send}
+	unbound := &hostJudge{at: judgeAt{systemOne: "x"}, configured: "m", model: "m", left: 1, send: send}
+	for name, j := range map[string]*hostJudge{"spent": spent, "unbound": unbound} {
+		if _, err := j.Ask(map[string]any{"code": "x"}, map[string]any{}); !errors.Is(err, cq.ErrNotSent) || sent != 0 {
+			t.Errorf("%s: %v (sent %d)", name, err, sent)
+		}
+	}
+}
+
+func TestAListOnUnreadSettingsSaysNothingExpires(t *testing.T) {
+	files := []sdk.FileEntry{{Name: "s1.state.json", Size: 10, Modified: "2026-11-01T00:00:00Z"}, {Name: "s1.v2.jsonl", Size: 10, Modified: "2026-11-01T00:00:00Z"}}
+	load := func(id string) (*cq.Scan, error) {
+		return &cq.Scan{ID: id, Version: cq.RecordVersion, Status: "done"}, nil
+	}
+	out := scanList(config{}, files, load)
+	view := out["scans"].([]any)[0].(map[string]any)
+	at, _ := view["expires_at"].(string)
+	if _, ok := out["scan_retention_days"]; ok || strings.HasPrefix(at, "2026") || !strings.Contains(at, "settings") {
+		t.Fatalf("retention %v, expires_at %q", out["scan_retention_days"], at)
 	}
 }

@@ -157,11 +157,21 @@ type fakeJudge struct {
 	where  string
 	conf   float64
 	chosen int
+	asked  map[string]int
 }
 
 func (f *fakeJudge) Model() string { return "fake" }
+func (f *fakeJudge) note(qs map[string]any) {
+	if f.asked == nil {
+		f.asked = map[string]int{}
+	}
+	for id := range qs {
+		f.asked[id]++
+	}
+}
 func (f *fakeJudge) Ask(state, qs map[string]any) (map[string]float64, error) {
 	f.calls++
+	f.note(qs)
 	f.seen = append(f.seen, state)
 	if f.fail {
 		return nil, errors.New("judge unavailable: 503")
@@ -175,6 +185,7 @@ func (f *fakeJudge) Ask(state, qs map[string]any) (map[string]float64, error) {
 
 func (f *fakeJudge) Choose(state, qs map[string]any) (map[string]Choice, error) {
 	f.chosen++
+	f.note(qs)
 	out := map[string]Choice{}
 	for id, q := range qs {
 		var keys []string
@@ -344,7 +355,7 @@ func TestScanWalksAndExcludes(t *testing.T) {
 	if strings.Join(refs, ",") != "a.go:code,a.go:docs,pkg/b.go:code,pkg/b.go:docs" {
 		t.Fatalf("judged %v; excluded %v", refs, s.Excluded)
 	}
-	for _, why := range []string{"gitignore", "gitattributes", "global_dir", "secret_named", "nul_bytes", "symlink", "test", "generated", "caller_exclude", "nested_repository"} {
+	for _, why := range []string{"gitignore", "gitattributes", "global_dir", "secret_named", "not_text", "symlink", "test", "generated", "caller_exclude", "nested_repository"} {
 		if s.Excluded[why] == 0 {
 			t.Errorf("no %s exclusion: %v", why, s.Excluded)
 		}

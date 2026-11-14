@@ -55,10 +55,10 @@ func TestNarrowedFixtureOracle(t *testing.T) {
 }
 
 func TestGuestNarrowedReleaseSustained(t *testing.T) {
-	for _, cap := range []int{128 << 10, 192 << 10} {
-		t.Run(fmt.Sprintf("cap_%d", cap), func(t *testing.T) { runNarrowedWorkload(t, cap) })
-	}
+	runNarrowedWorkload(t, segmentBytes)
 }
+
+func judgedSize(n int) bool { return n <= 1<<20 }
 
 func runNarrowedWorkload(t *testing.T, cap int) {
 	hash := candidateHash(t)
@@ -71,10 +71,6 @@ func runNarrowedWorkload(t *testing.T, cap int) {
 		t.Logf("observed pid=%d restarts=0 steps=%d source_reads=%d http=%d max_body=%d escaping=%d max_params=%d max_frame=%d max_result=%d ceiling=%d", pid, totalSteps, b.sourceReads, b.methods["http.post"], b.maxBody, b.maxEscaping, b.maxParams, w.maxFrame, w.maxResult, memoryLimit)
 	})
 	{
-		b.maxFileBytes = 0
-		if cap == 192<<10 {
-			b.maxFileBytes = cap
-		}
 		sizes := fixtureSizes(cap)
 		for scan := 0; scan < 3; scan++ {
 			generation := min(scan, 1)
@@ -84,7 +80,7 @@ func runNarrowedWorkload(t *testing.T, cap int) {
 			eligible := 0
 			for name, n := range sizes {
 				b.sources[name] = boundedSource(name, n, generation)
-				if n <= cap {
+				if judgedSize(n) {
 					eligible++
 				}
 			}
@@ -93,7 +89,7 @@ func runNarrowedWorkload(t *testing.T, cap int) {
 			w.invoke("scan", object{"action": "start", "path": "fixture", "scan_id": id})
 			var done object
 			steps := 0
-			for steps < 40 {
+			for steps < 400 {
 				steps++
 				totalSteps++
 				beforeCalls := b.methods["http.post"]
@@ -108,7 +104,6 @@ func runNarrowedWorkload(t *testing.T, cap int) {
 				for _, shape := range []string{"review_queue", "coverage"} {
 					narrowReport(t, w, id, shape)
 				}
-				assertNoOversizeIO(t, b, sizes, cap)
 				if r["status"] == "done" {
 					done = r
 					break
@@ -132,7 +127,7 @@ func runNarrowedWorkload(t *testing.T, cap int) {
 				t.Fatalf("identical scan missed cache: HTTP=%d result=%s", delta, raw(done))
 			}
 			for name, n := range sizes {
-				if n <= cap && (b.readAttempts["fixture/"+name] == 0 || (scan < 2 && b.submitted[name] == 0)) {
+				if judgedSize(n) && (b.readAttempts["fixture/"+name] == 0 || (scan < 2 && b.submitted[name] == 0)) {
 					t.Fatalf("eligible file not read/submitted: %s reads=%d submissions=%d", name, b.readAttempts["fixture/"+name], b.submitted[name])
 				}
 			}
@@ -167,20 +162,15 @@ func runNarrowedWorkload(t *testing.T, cap int) {
 
 func narrowReport(t *testing.T, w *worker, id, shape string) object {
 	t.Helper()
-	r := objectOf(t, w.invoke("report", object{"scan_id": id, "shape": shape, "limit": 100, "page_bytes": 200000}))["review"].(map[string]any)
+	args := object{"scan_id": id, "shape": shape, "limit": 100, "page_bytes": 200000}
+	if shape == "review_queue" {
+		args["tier"] = "all"
+	}
+	r := objectOf(t, w.invoke("report", args))["review"].(map[string]any)
 	if r["next_page_cursor"] != "" || r["total_entries"] != float64(len(r["entries"].([]any))) {
 		t.Fatalf("fixture report unexpectedly paginated: %s", raw(r))
 	}
 	return r
-}
-
-func assertNoOversizeIO(t *testing.T, b *broker, sizes map[string]int, cap int) {
-	t.Helper()
-	for name, n := range sizes {
-		if n > cap && (b.readAttempts["fixture/"+name] != 0 || b.submitted[name] != 0) {
-			t.Fatalf("oversize file read/submitted: %s size=%d reads=%d submissions=%d", name, n, b.readAttempts["fixture/"+name], b.submitted[name])
-		}
-	}
 }
 
 func assertNarrowReports(t *testing.T, q, c object, sizes map[string]int, cap int) {
@@ -210,7 +200,7 @@ func assertNarrowReports(t *testing.T, q, c object, sizes map[string]int, cap in
 	}
 	eligible := 0
 	for _, n := range sizes {
-		if n <= cap {
+		if judgedSize(n) {
 			eligible++
 		}
 	}
@@ -223,12 +213,10 @@ func assertNarrowReports(t *testing.T, q, c object, sizes map[string]int, cap in
 		if g == nil {
 			t.Fatalf("missing coverage %s", name)
 		}
-		if n > cap {
-			if r != nil || g["disposition"] != "unknown" || g["size"] != float64(n) || string(raw(g["reason_codes"])) != `["oversize"]` {
-				t.Fatalf("oversize masquerades as assessed/excluded: %s %s", raw(r), raw(g))
-			}
+		if !judgedSize(n) {
+			t.Fatalf("a fixture past 1 MiB: %s", name)
 		} else {
-			if r == nil || (r["assessment"] != "partial" && r["assessment"] != "unknown") || r["coverage"].(map[string]any)["disposition"] != "complete" || r["missing"] != float64(0) || r["answered"].(float64) == 0 || g["disposition"] != r["assessment"] || g["expected_chunks"] != g["completed_chunks"] || g["completed_chunks"].(float64) < 2 || !bytes.Contains(raw(g["reason_codes"]), []byte("context_limited")) {
+			if r == nil || (r["assessment"] != "partial" && r["assessment"] != "unknown") || r["coverage"].(map[string]any)["disposition"] != "complete" || r["missing"] != float64(0) || r["answered"].(float64) == 0 || g["disposition"] != r["assessment"] || g["expected_chunks"] != g["completed_chunks"].(float64)+noCode(r) || g["completed_chunks"].(float64) < 2 || !bytes.Contains(raw(g["reason_codes"]), []byte("context_limited")) {
 				t.Fatalf("incomplete admitted file: %s %s", raw(r), raw(g))
 			}
 			findings := r["findings"].([]any)
@@ -247,6 +235,8 @@ func assertNarrowReports(t *testing.T, q, c object, sizes map[string]int, cap in
 		}
 	}
 }
+
+func noCode(r object) float64 { n, _ := r["no_code_windows"].(float64); return n }
 
 func assertNarrowJournal(t *testing.T, data []byte, sizes map[string]int, cap int) {
 	t.Helper()
@@ -269,10 +259,13 @@ func assertNarrowJournal(t *testing.T, data []byte, sizes map[string]int, cap in
 	for _, r := range records {
 		ref := r["ref"].(string)
 		n, known := sizes[ref]
-		if !known || n > cap {
-			t.Fatalf("oversize/unknown assessment record: %s", raw(r))
+		if !known || !judgedSize(n) {
+			t.Fatalf("unknown assessment record: %s", raw(r))
 		}
 		refs[ref]++
+		if r["skipped"] == "too_small" {
+			continue
+		}
 		answers := r["answers"].(map[string]any)
 		for _, id := range r["expected"].([]any) {
 			p, ok := answers[id.(string)].(float64)
@@ -285,7 +278,7 @@ func assertNarrowJournal(t *testing.T, data []byte, sizes map[string]int, cap in
 		}
 	}
 	for name, n := range sizes {
-		if n <= cap && refs[name] < 4 {
+		if judgedSize(n) && refs[name] < 4 {
 			t.Fatalf("missing multi-window battery evidence: %s records=%d", name, refs[name])
 		}
 	}

@@ -3,7 +3,9 @@ package cq
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -25,7 +27,11 @@ func rulesScan(t *testing.T, f FS) *Scan {
 func requireBoundary(t *testing.T, s *Scan, ref, reason string) {
 	t.Helper()
 	for _, c := range s.Observed {
-		if c.Ref == ref && c.Kind == "subtree" && c.Disposition == "unknown" && contains(c.Reasons, reason) && contains(c.Reasons, "children_not_enumerated") {
+		want := "unknown"
+		if chosenSkips[reason] {
+			want = "excluded"
+		}
+		if c.Ref == ref && c.Kind == "subtree" && c.Disposition == want && contains(c.Reasons, reason) && contains(c.Reasons, "children_not_enumerated") {
 			return
 		}
 	}
@@ -59,7 +65,8 @@ func TestWalkRulesRootFailClosed(t *testing.T) {
 	}
 }
 func TestWalkRulesNestedFailureRetainsCursor(t *testing.T) {
-	for _, kind := range []string{"unreadable", "truncated", "unlistable", "unsupported"} {
+
+	for _, kind := range []string{"unreadable", "unlistable", "unsupported"} {
 		t.Run(kind, func(t *testing.T) {
 			f := walkFixture()
 			s := rulesScan(t, f)
@@ -67,9 +74,6 @@ func TestWalkRulesNestedFailureRetainsCursor(t *testing.T) {
 			switch kind {
 			case "unreadable":
 				f.readErr["pkg/.gitignore"] = errors.New("denied")
-			case "truncated":
-				f.truncated["pkg"] = true
-				reason = "dir_listing_truncated"
 			case "unlistable":
 				f.listErr["pkg"] = errors.New("denied")
 				reason = "unlistable_dir"
@@ -206,6 +210,17 @@ func TestWalkRulesBudgetCoverage(t *testing.T) {
 			if _, e := s.Step(table(t), f, &failJudge{}, nil, 0, 0); e != nil {
 				t.Fatal(e)
 			}
+			if kind == "step_budget" {
+
+				if len(s.Observed) != 0 {
+					t.Fatalf("a step's end journaled its frontier: %+v", s.Observed)
+				}
+				fr := s.Frontier()
+				if len(fr) != 2 || fr[0].Ref != "pending.go" || fr[0].Disposition != "pending" || fr[1].Ref != "pkg" || fr[1].Kind != "subtree" {
+					t.Fatalf("the frontier comes from the checkpoint: %+v", fr)
+				}
+				return
+			}
 			requireBoundary(t, s, "pkg", kind)
 			found := false
 			for _, c := range s.Observed {
@@ -253,8 +268,10 @@ func TestWalkRulesRootCoverageIsJournalValid(t *testing.T) {
 			}
 			if reason != "step_budget" {
 				_, e := s.Step(table(t), f, &failJudge{}, nil, 20, 100)
-				if reason != "file_budget" && e == nil {
+				if fatal := reason != "file_budget" && reason != "dir_listing_truncated"; fatal && e == nil {
 					t.Fatal("expected fatal root failure")
+				} else if !fatal && e != nil {
+					t.Fatalf("a completed boundary failed the step: %v", e)
 				}
 			}
 			requireBoundary(t, s, ".", reason)
@@ -280,5 +297,47 @@ func TestWalkRulesBudgetKeepsPartialProgressBoundary(t *testing.T) {
 	}
 	if _, e := s.Step(tb, f, &progressJudge{remaining: 1}, nil, 1, 20); e != nil || s.Status != "done" {
 		t.Fatalf("partial retry: %v %+v", e, s)
+	}
+}
+
+type stepCallsJudge struct{ left, calls int }
+
+func (j *stepCallsJudge) Model() string   { return "m" }
+func (j *stepCallsJudge) Backend() string { return "b" }
+func (j *stepCallsJudge) Ask(map[string]any, map[string]any) (map[string]float64, error) {
+	if j.left == 0 {
+		return nil, fmt.Errorf("%w (%w)", ErrStepCalls, ErrJudge)
+	}
+	j.left--
+	j.calls++
+	return map[string]float64{}, nil
+}
+func (j *stepCallsJudge) Choose(map[string]any, map[string]any) (map[string]Choice, error) {
+	return nil, fmt.Errorf("%w (%w)", ErrStepCalls, ErrJudge)
+}
+
+func TestASplitFileIsNotAnOutage(t *testing.T) {
+	f := walkFixture()
+	f.files["pkg/.gitignore"] = ""
+	s := rulesScan(t, f)
+	if _, e := s.Step(table(t), f, &stepCallsJudge{left: 0}, MemCache{}, 20, 100); e != nil {
+		t.Fatal(e)
+	}
+	if s.Status != "running" || len(s.Pending) != 1 || !strings.Contains(s.LastError, "next step continues") {
+		t.Fatalf("a split is not an outage: %s %q pending %d", s.Status, s.LastError, len(s.Pending))
+	}
+}
+
+func TestAChosenSkipIsExcludedAndAFailureUnknown(t *testing.T) {
+	for reason, want := range map[string]string{"gitignore": "excluded", "global_dir": "excluded", "nested_repository": "excluded",
+		"symlink": "excluded", "caller_exclude": "excluded", "language_dir": "excluded", "rules_error": "unknown", "unlistable_dir": "unknown",
+		"dir_listing_truncated": "unknown", "file_budget": "unknown"} {
+		s := &Scan{}
+		if err := s.boundary("d", reason); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.Observed[0].Disposition; got != want {
+			t.Fatalf("%s: %s, want %s", reason, got, want)
+		}
 	}
 }

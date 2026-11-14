@@ -1,6 +1,93 @@
 # Changelog
 
+## 0.2.2 — 0.1.15's corrections; the cache, report and scan rebuilt to fit the host's memory; review by evidence
+
+These describe source-level changes, not evidence of semantic accuracy. **Live semantic pilot: NOT RUN.**
+One real scan was hand-read in three files; README.md, under "Known limits of 0.2.2", says what that showed.
+
+A 0.2.0 package was signed on 2026-11-12 for one test installation, and a 0.2.1 package on 2026-11-14
+for a first real scan. Neither was published. Each keeps its version, and this release is 0.2.2: signed
+bytes are not replaced under a version (RELEASING.md).
+
+- **Carries everything in 0.1.15 below.** 0.1.15 was published on 2026-10-30.
+- **Needs AII OS 0.2.2 or newer** (`aiios_min_version`).
+- **Built on AII plugin SDK v0.2.2.**
+- **The cache.** A lookup streams its shard, so the cache's size never
+  reaches the guest's memory. The answers 0.1.15 kept are read where they are, and never moved, rewritten or removed,
+  so a rollback to 0.1.15 finds them whole. A lookup the cache cannot answer is an error, never a miss or a partial
+  hit. A rewrite and a file read end only at the store's own end.
+- **The report.** Every report shape reads the whole journal, one file at a time,
+  and a page is built in one block taken before the fold.
+- **Scanning.** A folder within the plugin's bounds is read whole, and a chosen skip is excluded; a folder
+  past them is left out by name (below). A listing that failed or was cut short is not an empty one. A scan's
+  journal is bounded by the room it finds, so its stop is always saved. A Terraform or automake marker is found on any
+  of the first 40 lines.
+- **Starting and continuing a scan.** Advancing tells the host whether to
+  call again. Every refusal known beforehand comes before the first change, and nothing is removed before a start is
+  known to fit. A start that does not fit says what is kept, and
+  removes nothing. A step ends once it has used its judge calls or examined 32 files, judged or left out. A
+  folder's listing is not counted, a file planned in more than one segment has its cached segments all worked
+  through before the count is looked at again, and the bound promises no time.
+- **Scans are kept by age.** A scan is kept `scan_retention_days` after its last write. Expired scans are removed
+  at a start or a tick, oldest first, each named. Nothing is removed by count or by name order. `scan action=remove`
+  removes named scans: every id is checked before the first removal, and a storage error after that can leave some
+  of them removed. A removal answers `status: "removed"` and the scans it removed; after such an error it
+  answers the error and does not list them. `keep_scans` is retired and declared only so that it can be named; clear it,
+  since an earlier version of this plugin still removes scans by it.
+- **Correctness files are tiered by evidence** (policy `evidence-tier-v1`). Pinned: a correctness finding with p
+  at least 0.80, placed in a unit with confidence at least 0.60, not context-limited, no intent stated. Intent
+  stated: every correctness finding carries a stated intent. Unpinned: the rest. `tier` selects one, pinned by
+  default, and every page has `tier_counts`. **Both bounds are first picks, not measured.**
+- **`triage`** gives one row per file, 50 a page. **`path`** names a file, folder or glob for `review_queue`,
+  `coverage` and `triage`.
+- **Stated intent.** Each ignored-error finding (EH-01, EH-02, EH-03) gets one more question over its window's
+  text with its comments: does a comment there say the error is ignored on purpose? A yes labels the finding
+  `intent_stated` only where the catalogue's GC-02 answered no in the same window. It never removes a finding or
+  lowers it. Every such flag shows its probability, or `none` with a reason. The `judge` operation asks no intent
+  question.
+- **Scope by kind, and files up to 1 MiB.** Text in a recognised language, written by a person, at most 1 MiB, is
+  in scope; anything else is out of scope with its reason, at no judge call. A file larger than one 192 KiB
+  segment is read and judged a segment at a time. A file changed between its steps is planned again, and what was
+  judged before is covered as stale (`source_changed`). `max_file_bytes` is no longer a setting. A file or folder
+  named with a line feed, carriage return or NUL is counted, not judged. **Not every file up to 1 MiB is judged:**
+  see the next entry.
+- **A file the worker cannot finish is refused by name.** The host ends the plugin's worker when a step runs out
+  of memory at 64 MiB or past its 90 s limit. After two such endings on one file, the file is covered as `unknown`
+  with the reason `not_finished`, counted, named in the scan's view, and the scan goes on. A new scan tries the file
+  again. Each such file costs two worker restarts, and the host deactivates a plugin restarted more than five times
+  in ten minutes, so three such files met close together can stop the plugin. The reason does not say which of
+  memory and time ended the worker. A worker ended in work that is not on a file (a folder's listing, the package
+  rules) still stops the scan at that work.
+- **A folder or a file's plan that the scan's saved state cannot hold is left out by name,** and the scan goes on.
+  A folder whose listing would not fit (`listing_too_wide`, named under `too_wide`), a folder with more entries
+  than the 16 pages the plugin reads (`dir_listing_truncated`, named under `listing_truncated`), and a large file
+  whose plan is too large (`plan_too_large`) each get one coverage row and are counted. Such a folder and
+  everything under it are not assessed, and it is counted once. A scan started at a folder past the 16 pages is
+  refused at the start. A folder that cannot be listed at all, or whose rules cannot be read, still holds the scan
+  at that folder with the error shown.
+- **Size and slop are findings.** Size needs no judge call and is applied when a report is read; `lane=size` lists
+  files by their lines. Slop is deterministic rules from the file's text (the `SL-` rules), a per-window battery
+  and one outline question per file; `lane=slop` lists them. Thresholds are one setting, `finding_thresholds`,
+  applied when a report is read. **Every threshold, and the judged questions' precision, are unmeasured.** Methods
+  are left out of SL-UNUSEDFUNC and SL-UNUSEDPARAM. Those two package rules are applied only where every non-test
+  Go file of a folder was judged: a Go file left out (given up, in a folder the scan left part way, or a symlink)
+  is marked, and its package is named with the rules withheld. Two cases get no mark, so the rules can still be
+  applied there: a symlink whose name cannot be recorded, and a symlinked Go file in a folder that an earlier
+  build listed in a scan this build resumes (README.md, known limits).
+- **Counted, not listed.** RD-04, ST-04 and pass-through functions other than same-name wrappers are counted and
+  not listed by default: `counted_not_listed` gives them by kind, and `list_all` lists every one.
+- **A budget in files judged.** `max_files` counts files judged, and a skipped file counts toward
+  `max_files_examined`. The stops are `file_cap_reached` and `examined_cap_reached`. A start names the calls per
+  judged file before any is spent, and a call the judge refused before sending is not counted.
+- **A scan in which a worker was ended can still be reported, in the cases tested.** The scan's place is saved
+  before and after each file. A report reads a folder's boundary row, a budget marker or a part-judged file's
+  closing row that comes back saying exactly what it said as the replay it is, once; anything else that comes back
+  is still refused. On a closing row, `completed_chunks` counts only segments judged whole, so it can be lower
+  than what was judged. What can still go wrong after a worker ends is in README.md's known limits.
+
 ## 0.1.15 — unreleased: 0.1.14's regressions corrected
+
+*Published 2026-10-30. "Unreleased" above is the heading as it stood at the tag.*
 
 The version is set for the AII OS 0.2.0 release train; the ladder signs and publishes it.
 **Live semantic pilot: NOT RUN.**

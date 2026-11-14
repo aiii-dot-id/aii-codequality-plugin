@@ -81,15 +81,15 @@ func releaseSuccess(t *testing.T, envelope object) object {
 func TestGuestReleaseScopeJudgeUTF8BatchPreflight(t *testing.T) {
 	hash := candidateHash(t)
 
-	const capBytes = 1024
-	text := strings.Repeat("界", capBytes/3) + "aa"
+	const capBytes = segmentBytes
+	text := strings.Repeat("界", (capBytes+1)/3) + "a"
 	if !utf8.ValidString(text) || len(text) != capBytes+1 || utf8.RuneCountInString(text) >= capBytes {
 		t.Fatal("bad UTF-8 boundary fixture")
 	}
 	b := newBroker()
 	b.failDocs = false
 	w := start(t, b, hash)
-	settings := object{"max_file_bytes": capBytes, "chunk_bytes": 131072}
+	settings := object{"chunk_bytes": 131072}
 	for _, later := range []bool{false, true} {
 		t.Run(fmt.Sprintf("oversize_later_%t", later), func(t *testing.T) {
 			items := []any{object{"ref": "oversize.go", "language": "go", "text": text}}
@@ -99,7 +99,7 @@ func TestGuestReleaseScopeJudgeUTF8BatchPreflight(t *testing.T) {
 			before := raw(b.files)
 			r, calls := releaseInvoke(t, w, "judge", object{"items": items}, settings)
 			encoded := string(raw(r))
-			if r["status"] != "failed" || !strings.Contains(encoded, "OPERATION_ARGUMENT_INVALID") || !strings.Contains(encoded, "UTF-8 bytes exceeds max_file_bytes") || !strings.Contains(encoded, "oversize.go") {
+			if r["status"] != "failed" || !strings.Contains(encoded, "OPERATION_ARGUMENT_INVALID") || !strings.Contains(encoded, fmt.Sprintf("196609 UTF-8 bytes exceeds the %d bytes one judge call carries", capBytes)) || !strings.Contains(encoded, "oversize.go") {
 				t.Errorf("not the UTF-8 byte guard: %s", encoded)
 			}
 
@@ -262,6 +262,9 @@ func TestGuestReleaseScopeReportsInvalidSettings(t *testing.T) {
 		if shape == "list" {
 			a = object{}
 		}
+		if shape == "review_queue" {
+			a["tier"] = "all"
+		}
 		args[shape] = a
 		r, _ := releaseInvoke(t, w, "report", a, nil)
 		out := releaseSuccess(t, r)
@@ -269,8 +272,8 @@ func TestGuestReleaseScopeReportsInvalidSettings(t *testing.T) {
 			t.Fatal("valid settings warned")
 		}
 
-		if shape == "summary" && out["scan"].(map[string]any)["steps_left"] == nil {
-			t.Fatal("valid unfinished scan has no estimate")
+		if shape == "summary" && out["scan"].(map[string]any)["progress"] == nil {
+			t.Fatal("valid unfinished scan says nothing of how it advances")
 		}
 		switch shape {
 		case "list":
@@ -292,7 +295,7 @@ func TestGuestReleaseScopeReportsInvalidSettings(t *testing.T) {
 	for _, invalid := range []struct {
 		key   string
 		value any
-	}{{"max_file_bytes", 1 << 20}, {"backend", "invalid-backend"}, {"max_calls_per_step", 0}} {
+	}{{"backend", "invalid-backend"}, {"max_calls_per_step", 0}} {
 		for _, shape := range shapes {
 			t.Run(invalid.key+"/"+shape, func(t *testing.T) {
 				before := raw(b.files)
@@ -305,8 +308,17 @@ func TestGuestReleaseScopeReportsInvalidSettings(t *testing.T) {
 				}
 				releaseNoEstimates(t, out)
 				delete(out, "assessment_configuration_error")
-				if !bytes.Equal(raw(baseline[shape]), raw(out)) {
-					t.Errorf("retained evidence changed: valid=%s invalid=%s", raw(baseline[shape]), raw(out))
+				want := baseline[shape]
+				if shape == "list" {
+
+					want = objectOf(t, raw(want))
+					delete(want, "scan_retention_days")
+					for _, v := range want["scans"].([]any) {
+						v.(map[string]any)["expires_at"] = "unknown: the settings could not be read, and no scan expires until they can"
+					}
+				}
+				if !bytes.Equal(raw(want), raw(out)) {
+					t.Errorf("retained evidence changed: valid=%s invalid=%s", raw(want), raw(out))
 				}
 				for _, call := range calls {
 					if call != "settings.get" && call != "fs.read" && call != "fs.list" {

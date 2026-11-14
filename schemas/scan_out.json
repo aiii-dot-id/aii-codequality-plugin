@@ -4,26 +4,82 @@
   "type": "object",
   "properties": {
     "scan_id": {
-      "type": "string"
+      "type": "string",
+      "description": "start, step: the scan this result is about. A remove names its scans in removed"
     },
     "status": {
-      "type": "string"
+      "type": "string",
+      "description": "start, step: running, done, file_cap_reached (max_files judged), examined_cap_reached (max_files_examined seen), judge_unavailable, request_blocked, storage_cap, or legacy_report_only (a scan this version reports and does not step). remove: removed"
     },
-    "steps_left": {
+    "max_files": {
       "type": "integer",
-      "description": "about how many more steps the scan needs, while it is unfinished"
+      "description": "the most files the scan judges"
+    },
+    "max_files_examined": {
+      "type": "integer",
+      "description": "the most files the scan examines, judged or skipped"
+    },
+    "files_pending_known": {
+      "type": "integer",
+      "description": "files listed and not yet examined, while the scan is unfinished"
+    },
+    "dirs_unlisted": {
+      "type": "integer",
+      "description": "folders not yet listed, while the scan is unfinished"
+    },
+    "calls_per_judged_file": {
+      "type": "object",
+      "description": "once a file is judged: judge calls per judged file, and the same with cache hits counted",
+      "properties": {
+        "calls": {
+          "type": "number"
+        },
+        "with_cache_hits": {
+          "type": "number"
+        }
+      }
+    },
+    "judge_calls": {
+      "type": "string",
+      "description": "at a start: the judge calls a judged file costs before caching"
     },
     "progress": {
       "type": "string",
-      "description": "what the scan still costs, while it is unfinished"
+      "description": "that the scan is unfinished and who steps it"
     },
     "sent_to": {
       "type": "object",
       "description": "where this step's texts were sent: the judge's backend and address"
+    },
+    "expired_removed": {
+      "type": "array",
+      "description": "start: the scans removed because they had expired, each with when it expired"
+    },
+    "recognised_languages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "start: the languages a file must be in to be judged"
+    },
+    "rules_without_calls": {
+      "type": "object",
+      "description": "start: for each recognised language, the slop rules applied from the file's text with no judge call"
+    },
+    "scope": {
+      "type": "string",
+      "description": "start: what a file must be to be judged; anything else is listed out of scope with its reason"
+    },
+    "intent_calls": {
+      "type": "integer",
+      "description": "of calls, those that asked the intent question"
+    },
+    "removed": {
+      "type": "array",
+      "description": "remove: the scans removed, by id"
     }
   },
   "required": [
-    "scan_id",
     "status"
   ]
 }

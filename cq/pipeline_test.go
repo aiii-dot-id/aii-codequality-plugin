@@ -71,7 +71,7 @@ func TestPartialFindingsSurvive(t *testing.T) {
 		durable = DeduplicateRecords(append(durable, copy))
 		return nil
 	}
-	recs, err := JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, save)
+	recs, err := JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, save, false)
 	if !errors.Is(err, ErrJudge) || len(recs) != 2 || len(durable) != 2 {
 		t.Fatalf("records %d durable %d err %v", len(recs), len(durable), err)
 	}
@@ -83,7 +83,7 @@ func TestPartialFindingsSurvive(t *testing.T) {
 	}
 
 	j = &progressJudge{remaining: 20, locationRefused: true}
-	recs, err = JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, nil)
+	recs, err = JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, nil, false)
 	if err != nil || len(recs[0].Findings) != 1 || recs[0].Findings[0].LocationReason != "localization_failed" {
 		t.Fatalf("optional refusal erased evidence: %v %+v", err, recs)
 	}
@@ -91,7 +91,7 @@ func TestPartialFindingsSurvive(t *testing.T) {
 		t.Fatal("localization changed checklist coverage")
 	}
 	j = &progressJudge{remaining: 20, locationFail: true}
-	recs, err = JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, nil)
+	recs, err = JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, nil, false)
 	if !errors.Is(err, ErrJudge) || len(recs) != 1 || len(recs[0].Findings) != 1 || !localizationPending(recs[0]) || AssessmentOf(recs[0]).Missing != 0 {
 		t.Fatalf("transient location failure erased evidence or became an outcome: %v %+v", err, recs)
 	}
@@ -110,12 +110,12 @@ func TestProgressIndependentOfCache(t *testing.T) {
 		return nil
 	}
 	j := &progressJudge{remaining: 1}
-	_, err := JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, save)
+	_, err := JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, save, false)
 	if !errors.Is(err, ErrJudge) {
 		t.Fatalf("need interrupted first step: %v", err)
 	}
 	j = &progressJudge{remaining: 1}
-	recs, err := JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, durable, save)
+	recs, err := JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, durable, save, false)
 	if err != nil || j.calls != 1 || len(recs) != 2 || !batteryAnswered(recs[0]) || !batteryAnswered(recs[1]) {
 		t.Fatalf("no-cache resume: %v calls %d records %+v", err, j.calls, recs)
 	}
@@ -123,7 +123,7 @@ func TestProgressIndependentOfCache(t *testing.T) {
 		t.Fatalf("replay doubled progress: %d", len(durable))
 	}
 	j = &progressJudge{remaining: 20}
-	changed, err := JudgeTextProgress(table, j, nil, "f.go", "go", strings.ReplaceAll(progressSource, "work-item", "changed-item"), ChunkBytes, durable, nil)
+	changed, err := JudgeTextProgress(table, j, nil, "f.go", "go", strings.ReplaceAll(progressSource, "work-item", "changed-item"), ChunkBytes, durable, nil, false)
 	if err != nil || j.calls != 2 || changed[0].SourceDigest == recs[0].SourceDigest {
 		t.Fatalf("changed source reused progress: %v calls %d", err, j.calls)
 	}
@@ -132,7 +132,7 @@ func TestProgressIndependentOfCache(t *testing.T) {
 func TestProgressWriteFailureStopsBeforeNextBattery(t *testing.T) {
 	table, _ := LoadTable()
 	j := &progressJudge{remaining: 20}
-	recs, err := JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, func(Record) error { return errors.New("disk full") })
+	recs, err := JudgeTextProgress(table, j, nil, "f.go", "go", progressSource, ChunkBytes, nil, func(Record) error { return errors.New("disk full") }, false)
 	if !errors.Is(err, ErrProgress) || j.calls != 1 || len(recs) != 0 {
 		t.Fatalf("advanced after write failure: %v calls %d recs %d", err, j.calls, len(recs))
 	}

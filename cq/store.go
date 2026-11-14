@@ -2,9 +2,14 @@ package cq
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -54,8 +59,11 @@ func ReadPrefix(s Store, path string, max int64) ([]byte, bool, error) {
 		if int64(len(out)) > max {
 			return out[:max], false, nil
 		}
-		if eof || len(b) == 0 {
+		if eof {
 			return out, true, nil
+		}
+		if len(b) == 0 {
+			return nil, false, fmt.Errorf("read of %s returned nothing at %d before its end: %w", path, len(out), io.ErrNoProgress)
 		}
 	}
 }
@@ -72,26 +80,31 @@ func WholeLines(b []byte) []byte {
 	return nil
 }
 
-const CacheShards = 16
+const CacheShards = 256
+
+const cachePage = 64 << 10
+
+const cacheWrite = 192 << 10
 
 var ErrCacheFull = errors.New("the answer is larger than the cache keeps")
+
+var ErrNotFound = errors.New("no such folder")
+
+type Lister interface {
+	List(dir string) ([]Entry, bool, error)
+}
+
+type Publisher interface {
+	PublishStaged(path, staged, sha256Hex string) error
+}
 
 type ShardCache struct {
 	S        Store
 	MaxBytes int64
-	shards   map[string]*shard
-}
-
-type entry struct {
-	k string
-	a json.RawMessage
-}
-
-type shard struct {
-	entries []entry
-	index   map[string]int
-	size    int64
-	over    bool
+	sizes    map[string]int64
+	earlier  map[string]bool
+	unknown  error
+	listed   bool
 }
 
 func line(k string, a json.RawMessage) []byte {
@@ -99,116 +112,259 @@ func line(k string, a json.RawMessage) []byte {
 	return append(b, '\n')
 }
 
-func (c *ShardCache) ShardBytes() int64 { return max(c.MaxBytes/CacheShards, 64<<10) }
+func (c *ShardCache) ShardBytes() int64 { return max(c.MaxBytes/CacheShards, 4<<10) }
 
-func (c *ShardCache) shard(key string) (string, *shard) {
-	name := "cache/" + key[:1] + ".jsonl"
-	if c.shards == nil {
-		c.shards = map[string]*shard{}
+func shardName(key string) string { return "cache/" + key[:2] + ".jsonl" }
+
+func earlierName(key string) string { return "cache/" + key[:1] + ".jsonl" }
+
+func shardStem(name string) string {
+	stem, ok := strings.CutSuffix(name, ".jsonl")
+	if !ok || !isHex(stem) {
+		return ""
 	}
-	if sh, ok := c.shards[name]; ok {
-		return name, sh
-	}
-	sh := &shard{index: map[string]int{}}
-	if b, complete, err := ReadPrefix(c.S, name, c.ShardBytes()); err == nil {
-		if !complete {
-			sh.over = true
-			b = WholeLines(b)
-		}
-		sh.size = int64(len(b))
-		for _, ln := range strings.Split(string(b), "\n") {
-			var e struct {
-				K string          `json:"k"`
-				A json.RawMessage `json:"a"`
-			}
-			if json.Unmarshal([]byte(ln), &e) == nil && e.K != "" {
-				sh.index[e.K] = len(sh.entries)
-				sh.entries = append(sh.entries, entry{e.K, e.A})
-			}
-		}
-	}
-	c.shards[name] = sh
-	return name, sh
+	return stem
 }
 
-func (c *ShardCache) Get(key string) (json.RawMessage, bool) {
-	_, sh := c.shard(key)
-	i, ok := sh.index[key]
-	if !ok {
-		return nil, false
+func Shard(name string) bool { return len(shardStem(name)) == 2 }
+
+func EarlierShard(name string) bool { return len(shardStem(name)) == 1 }
+
+func (c *ShardCache) list() {
+	if c.listed {
+		return
 	}
-	return sh.entries[i].a, true
+	c.listed = true
+	c.sizes, c.earlier = map[string]int64{}, map[string]bool{}
+	l, ok := c.S.(Lister)
+	if !ok {
+		c.unknown = errors.New("the cache's store cannot list its folder")
+		return
+	}
+	entries, cut, err := l.List("cache")
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return
+	case err != nil:
+		c.unknown = fmt.Errorf("the cache folder could not be listed: %w", err)
+		return
+	case cut:
+		c.unknown = errors.New("the cache folder's listing was cut short")
+		return
+	}
+	for _, e := range entries {
+		switch {
+		case e.Dir:
+		case Shard(e.Name):
+			c.sizes["cache/"+e.Name] = e.Size
+		case EarlierShard(e.Name):
+			c.earlier["cache/"+e.Name] = true
+		}
+	}
+}
+
+func isHex(s string) bool {
+	for _, r := range s {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *ShardCache) stream(name string, page int, visit func(line []byte)) (int64, error) {
+	longest := int(max(c.ShardBytes()/2, 1<<20))
+	var carry []byte
+	skipping := false
+	var off int64
+	for {
+		b, eof, err := c.S.Read(name, off, page)
+		if err != nil {
+			return off, err
+		}
+		off += int64(len(b))
+		read := len(b)
+		for len(b) > 0 {
+			i := bytes.IndexByte(b, '\n')
+			if i < 0 {
+				if !skipping && len(carry)+len(b) > longest {
+					carry, skipping = carry[:0], true
+				}
+				if !skipping {
+					carry = append(carry, b...)
+				}
+				break
+			}
+			if !skipping {
+				if len(carry) > 0 {
+					carry = append(carry, b[:i]...)
+					visit(carry)
+					carry = carry[:0]
+				} else {
+					visit(b[:i])
+				}
+			}
+			skipping = false
+			b = b[i+1:]
+		}
+		if eof {
+			return off, nil
+		}
+		if read == 0 {
+			return off, fmt.Errorf("nothing was returned at %d before the end: %w", off, io.ErrNoProgress)
+		}
+	}
+}
+
+func (c *ShardCache) Get(key string) (json.RawMessage, bool, error) {
+	c.list()
+	if c.unknown != nil {
+		return nil, false, c.unknown
+	}
+	name := shardName(key)
+	if _, there := c.sizes[name]; there {
+		found, size, err := c.find(name, key)
+		if err != nil {
+			return nil, false, err
+		}
+		c.sizes[name] = size
+		if found != nil {
+			return found, true, nil
+		}
+	}
+	old := earlierName(key)
+	if !c.earlier[old] {
+		return nil, false, nil
+	}
+	found, _, err := c.find(old, key)
+	if err != nil {
+		return nil, false, err
+	}
+	return found, found != nil, nil
+}
+
+func (c *ShardCache) find(name, key string) (json.RawMessage, int64, error) {
+	needle := []byte(`"k":` + strconv.Quote(key))
+	var found json.RawMessage
+	size, err := c.stream(name, cachePage, func(ln []byte) {
+		if !bytes.Contains(ln, needle) {
+			return
+		}
+		var e struct {
+			K string          `json:"k"`
+			A json.RawMessage `json:"a"`
+		}
+		if json.Unmarshal(ln, &e) == nil && e.K == key {
+			found = append(json.RawMessage(nil), e.A...)
+		}
+	})
+	if err != nil {
+		return nil, size, fmt.Errorf("%s was not read to its end: %w", name, err)
+	}
+	return found, size, nil
 }
 
 func (c *ShardCache) Put(key string, a json.RawMessage) error {
-	name, sh := c.shard(key)
 	ln := line(key, a)
 	limit := c.ShardBytes()
 	if int64(len(ln)) > limit/2 {
 		return ErrCacheFull
 	}
-	if sh.over || sh.size+int64(len(ln)) > limit {
-		if err := c.compact(name, sh, limit/2-int64(len(ln))); err != nil {
+	c.list()
+	if c.unknown != nil {
+		return c.unknown
+	}
+
+	name := shardName(key)
+	size := c.sizes[name]
+	if size+int64(len(ln)) > limit {
+		kept, err := c.compact(name, size, limit/2-int64(len(ln)))
+		if err != nil {
 			return err
 		}
+		size = kept
 	}
 	if err := c.S.Append(name, ln); err != nil {
+
 		return err
 	}
-	sh.index[key] = len(sh.entries)
-	sh.entries = append(sh.entries, entry{key, a})
-	sh.size += int64(len(ln))
+	c.sizes[name] = size + int64(len(ln))
 	return nil
 }
 
-func (c *ShardCache) compact(name string, sh *shard, budget int64) error {
-	var kept []entry
-	seen := map[string]bool{}
-	var used int64
-	for i := len(sh.entries) - 1; i >= 0; i-- {
-		e := sh.entries[i]
-		if seen[e.k] {
-			continue
-		}
-		seen[e.k] = true
-		n := int64(len(line(e.k, e.a)))
-		if used+n > budget {
-			break
-		}
-		used += n
-		kept = append(kept, e)
+func (c *ShardCache) compact(name string, size, budget int64) (int64, error) {
+	pub, ok := c.S.(Publisher)
+	if !ok {
+		return 0, errors.New("the cache's store cannot replace a file in one step")
 	}
-	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
-		kept[i], kept[j] = kept[j], kept[i]
-	}
+	staged := name + ".next"
+	start := max(size-max(budget, 0), 0)
+
+	off := max(start-1, 0)
+	skip := start > 0
+	sum := sha256.New()
+	var kept int64
 	var buf []byte
-	first := true
+	written := false
 	flush := func() error {
 		var err error
-		if first {
-			err = c.S.Write(name, buf)
-			first = false
+		if !written {
+			err = c.S.Write(staged, buf)
+			written = true
 		} else if len(buf) > 0 {
-			err = c.S.Append(name, buf)
+			err = c.S.Append(staged, buf)
 		}
+		sum.Write(buf)
+		kept += int64(len(buf))
 		buf = buf[:0]
 		return err
 	}
-	for _, e := range kept {
-		ln := line(e.k, e.a)
-		if len(buf)+len(ln) > IOPage && len(buf) > 0 {
-			if err := flush(); err != nil {
-				return err
+	for {
+		b, eof, err := c.S.Read(name, off, cachePage)
+		if err != nil {
+			return 0, err
+		}
+		off += int64(len(b))
+		read := len(b)
+		if skip {
+			if i := bytes.IndexByte(b, '\n'); i >= 0 {
+				b, skip = b[i+1:], false
+			} else {
+				b = nil
 			}
 		}
-		buf = append(buf, ln...)
+		if eof {
+
+			if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
+				b = b[:i+1]
+			} else {
+				b = nil
+			}
+		}
+		for len(b) > 0 {
+			n := min(len(b), cacheWrite-len(buf))
+			buf = append(buf, b[:n]...)
+			b = b[n:]
+			if len(buf) >= cacheWrite {
+				if err := flush(); err != nil {
+					return 0, err
+				}
+			}
+		}
+		if eof {
+			break
+		}
+		if read == 0 {
+			return 0, fmt.Errorf("the rewrite of %s read nothing at %d before its end: %w", name, off, io.ErrNoProgress)
+		}
 	}
 	if err := flush(); err != nil {
-		return err
+		return 0, err
 	}
-	sh.entries, sh.index, sh.size, sh.over = kept, map[string]int{}, used, false
-	for i, e := range kept {
-		sh.index[e.k] = i
+	if err := pub.PublishStaged(name, staged, hex.EncodeToString(sum.Sum(nil))); err != nil {
+		return 0, err
 	}
-	return nil
+	c.sizes[name] = kept
+	runtime.GC()
+	return kept, nil
 }

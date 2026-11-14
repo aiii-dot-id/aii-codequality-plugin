@@ -1,6 +1,7 @@
 package cq
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -8,11 +9,22 @@ import (
 
 //go:noinline
 func boundedContextWindows(t *Table, lang, source string, size int) ([]SourceWindow, error) {
+	return boundedWindowsAt(t, lang, source, size, 1, false)
+}
+
+func boundedWindowsAt(t *Table, lang, source string, size, firstLine int, limited bool) ([]SourceWindow, error) {
+	return boundedWindowsWith(t, lang, source, size, firstLine, limited, nil)
+}
+
+func boundedWindowsWith(t *Table, lang, source string, size, firstLine int, limited bool, units *SegmentUnits) ([]SourceWindow, error) {
 	if size <= 0 {
 		size = ChunkBytes
 	}
+	if units == nil && t != nil && t.Langs[lang] != nil && source != "" {
+		units = unitsOf(source, lang)
+	}
 	for {
-		windows, err := ContextWindows(t, lang, source, size)
+		windows, err := contextWindowsWith(t, lang, source, size, firstLine, limited, units)
 		if err != nil {
 			return nil, err
 		}
@@ -26,7 +38,11 @@ func boundedContextWindows(t *Table, lang, source string, size int) ([]SourceWin
 				if len(b.items) == 0 {
 					continue
 				}
-				_, err := RequestBody(strings.Repeat("m", 128), map[string]any{"language": lang, b.field: b.body.Text}, windowQuestions(b.items, b.field, b.body))
+				questions := windowQuestions(b.items, b.field, b.body)
+				if !requestMayExceed(b.body.Text, questions) {
+					continue
+				}
+				_, err := RequestBody(strings.Repeat("m", 128), map[string]any{"language": lang, b.field: b.body.Text}, questions)
 				if errors.Is(err, ErrRequestSize) {
 					tooLarge = true
 					break
@@ -57,3 +73,13 @@ func windowQuestions(items []Item, field string, body Chunk) map[string]any {
 	}
 	return questions
 }
+
+func requestMayExceed(text string, questions map[string]any) bool {
+	q, err := json.Marshal(questions)
+	if err != nil {
+		return true
+	}
+	return 6*len(text)+len(q)+requestRoom >= MaxRequestBytes
+}
+
+const requestRoom = 1024

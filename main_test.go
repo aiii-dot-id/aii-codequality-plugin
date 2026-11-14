@@ -134,7 +134,9 @@ func readManifest(t *testing.T) manifest {
 // Every value that depends on the judge or the machine is an operator's setting with a default
 // (OP-CQ-2): the package declares each with the default and range this code reads, the kit's
 // own validator accepts the declaration, and the key is not required, since a local judge needs
-// none.
+// none. keep_scans alone is declared with no default: the host hands a plugin every declared
+// default, so only without one can a start tell the operator's number from nobody's (preserve
+// existing work).
 func TestEveryBackendDependentValueIsASetting(t *testing.T) {
 	m := readManifest(t)
 	if err := aiiospkg.ValidateSettings(m.Settings); err != nil {
@@ -148,6 +150,12 @@ func TestEveryBackendDependentValueIsASetting(t *testing.T) {
 		d, ok := decl[b.key]
 		if !ok || d.Type != "integer" || d.Minimum == nil || d.Maximum == nil {
 			t.Fatalf("%s is not declared as an integer setting with a range: %+v", b.key, d)
+		}
+		if b.key == "keep_scans" {
+			if d.Default != nil || b.def != keepEveryScan || b.def >= b.min || int64(*d.Minimum) != b.min || int64(*d.Maximum) != b.max {
+				t.Fatalf("keep_scans: declared default %v range %v..%v, read as %d in %d..%d, and no default is required", d.Default, *d.Minimum, *d.Maximum, b.def, b.min, b.max)
+			}
+			continue
 		}
 		if def, _ := d.Default.(float64); int64(def) != b.def || int64(*d.Minimum) != b.min || int64(*d.Maximum) != b.max {
 			t.Fatalf("%s: declared default %v range %v..%v, read as %d in %d..%d", b.key, d.Default, *d.Minimum, *d.Maximum, b.def, b.min, b.max)
@@ -174,17 +182,17 @@ func TestEveryBackendDependentValueIsASetting(t *testing.T) {
 // the declaration is refused by its key rather than used.
 func TestSettingsAreReadAndHeldToTheirRanges(t *testing.T) {
 	c := mustConfig(t, values{})
-	if c.backend != backendJev || c.model != jevDefault || c.chunkBytes() != cq.ChunkBytes || c.maxFileBytes() != 128<<10 ||
-		c.keepScans() != 8 || c.cacheBytes() != 32<<20 || !c.scheduled {
+	if c.backend != backendJev || c.model != jevDefault || c.chunkBytes() != cq.ChunkBytes ||
+		c.keepScans() != keepEveryScan || c.cacheBytes() != 16<<20 || !c.scheduled {
 		t.Fatalf("defaults: %+v", c)
 	}
 	c = mustConfig(t, values{"backend": "local", "local_judge_url": "http://judge.lan:8080/", "chunk_bytes": 8000,
-		"max_file_bytes": 65536, "keep_scans": 3, "cache_max_bytes": 4 << 20, "scheduled_steps": false, "model": "kev-9b"})
-	if c.backend != backendLocal || c.localBase != "http://judge.lan:8080" || c.chunkBytes() != 8000 || c.maxFileBytes() != 65536 ||
+		"keep_scans": 3, "cache_max_bytes": 4 << 20, "scheduled_steps": false, "model": "kev-9b"})
+	if c.backend != backendLocal || c.localBase != "http://judge.lan:8080" || c.chunkBytes() != 8000 ||
 		c.keepScans() != 3 || c.cacheBytes() != 4<<20 || c.scheduled || c.model != "kev-9b" {
 		t.Fatalf("operator's values: %+v", c)
 	}
-	for _, v := range []values{{"chunk_bytes": 1}, {"max_calls_per_step": 0}, {"step_ms": 999999}, {"backend": "both"}, {"local_judge_url": "ftp://x"}} {
+	for _, v := range []values{{"chunk_bytes": 1}, {"max_calls_per_step": 0}, {"step_ms": 999999}, {"backend": "both"}, {"local_judge_url": "ftp://x"}, {"keep_scans": keepEveryScan}} {
 		if _, err := configFrom(v); reasonOf(err) != "JUDGE_CONFIGURATION_INVALID" {
 			t.Fatalf("%v accepted: %v", v, err)
 		}
@@ -398,24 +406,64 @@ func TestTheScheduleIsDeclaredAsTheProgressLineSaysIt(t *testing.T) {
 	}
 }
 
-// A scan says what it still costs: about how many steps, and either that it advances by itself
-// every interval or that each step is a call of the caller's; nothing once it has ended.
+// A scan says it is unfinished and who steps it, with no interval the host does not keep and no
+// estimate: the facts it knows are the files pending and the folders not listed, and
+// once anything is judged, what each judged file has cost. Nothing once it has ended.
 func TestAScanSaysWhatItStillCosts(t *testing.T) {
-	s := &cq.Scan{Status: "running", Stack: []string{"a", "b"}, Pending: make([]cq.Entry, 30), DirsListed: 2, FilesListed: 40,
-		FilesSeen: 10, FilesJudged: 5, Calls: 10, MaxFiles: 5000}
-	n := s.StepsLeft(12, filesPerStep)
-	if n < 1 {
-		t.Fatalf("steps left %d", n)
-	}
-	if got := progress(mustConfig(t, values{}), s); got != fmt.Sprintf("This scan needs about %d more steps. It advances by itself every 600 seconds; `report` shows how far it has come.", n) {
+	s := &cq.Scan{Version: cq.RecordVersion, MaxFileBytes: 128 << 10, Status: "running", Stack: []string{"a", "b"},
+		Pending: make([]cq.Entry, 30), FilesSeen: 10, FilesJudged: 4, Calls: 10, CacheHits: 2, MaxFiles: 5000}
+	if got := progress(mustConfig(t, values{}), s); got != "This scan is unfinished and advances by itself; `report` shows how far it has come." {
 		t.Fatalf("scheduled: %q", got)
 	}
-	if got := progress(mustConfig(t, values{"scheduled_steps": false}), s); got != fmt.Sprintf("This scan needs about %d more steps, and each step is one call of yours.", n) {
+	if got := progress(mustConfig(t, values{"scheduled_steps": false}), s); got != "This scan is unfinished, and each step is one call of yours." {
 		t.Fatalf("manual: %q", got)
+	}
+	view := scanView(mustConfig(t, values{}), s)
+	if view["files_pending_known"] != 30 || view["dirs_unlisted"] != 2 || view["max_files_examined"] != cq.ExaminedPerFile*5000 {
+		t.Fatalf("view: %v", view)
+	}
+	if c := view["calls_per_judged_file"].(map[string]any); c["calls"] != 2.5 || c["with_cache_hits"] != 3.0 || c["intent"] != 0.0 {
+		t.Fatalf("calls per judged file: %v", c)
+	}
+	// The view is a plugin result: the kit's own marshaller must take it (it refuses a struct or a
+	// map of floats, which a native test never meets otherwise).
+	if _, err := sdk.ResultSize(view); err != nil {
+		t.Fatalf("the scan view is no result: %v", err)
+	}
+	if _, ok := view["steps_left"]; ok {
+		t.Fatal("an estimate is printed")
 	}
 	s.Status = "done"
 	if got := progress(mustConfig(t, values{}), s); got != "" {
 		t.Fatalf("an ended scan: %q", got)
+	}
+	if _, ok := scanView(mustConfig(t, values{}), s)["files_pending_known"]; ok {
+		t.Fatal("an ended scan lists pending files")
+	}
+}
+
+// A scan this version will not step lists as legacy_report_only while its saved status says it
+// is unfinished, with the reason, and the schedule passes it by: it cannot spend.
+func TestALegacyScanIsReportOnlyAndNeverSpends(t *testing.T) {
+	legacy := &cq.Scan{ID: "runtime-internal-rollback-pass", Version: cq.RecordVersion - 1, Status: "running", Calls: 1069, Stack: []string{"x"}}
+	view := scanView(mustConfig(t, values{}), legacy)
+	if view["status"] != statusReportOnly || view["report_only_reason"] != legacyScanRefusal || view["progress"] != nil {
+		t.Fatalf("view: %v", view)
+	}
+	if unfinished(legacy) {
+		t.Fatal("the schedule would step a report-only scan")
+	}
+	load := func(string) (*cq.Scan, error) { return legacy, nil }
+	stepped := func(*cq.Scan) (any, error) { t.Fatal("the schedule stepped a report-only scan"); return nil, nil }
+	if _, err := advanceScans([]string{legacy.ID}, load, stepped); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stepScan(mustConfig(t, values{}), legacy, 0); err == nil {
+		t.Fatal("an explicit step was taken")
+	}
+	legacy.Status = "done"
+	if v := scanView(mustConfig(t, values{}), legacy); v["status"] != "done" {
+		t.Fatalf("an ended legacy scan: %v", v["status"])
 	}
 }
 
@@ -466,4 +514,22 @@ func defaultInts() map[string]int64 {
 		m[b.key] = b.def
 	}
 	return m
+}
+
+// A scan's journal gets the room the quota leaves once everything kept, the cache's room to grow
+// and a reserve are counted, so a full aii-os scan with its tests (about 19 MB) fits beside the
+// default cache, and the room left is never so small that the scan could not save its own stop.
+func TestAScansJournalGetsTheRoomLeft(t *testing.T) {
+	share := int64(64 << 10)
+	if room := journalRoom(0, 0, defaultCacheBytes, share); room < 40<<20 || room > privateQuota-defaultCacheBytes {
+		t.Fatalf("an empty directory: %d bytes of room", room)
+	}
+	// Two full aii-os scans kept (about 19 MB each) and a full cache leave too little: refused.
+	if room := journalRoom(38<<20+defaultCacheBytes, defaultCacheBytes, defaultCacheBytes, share); room >= minJournalRoom+8<<20 {
+		t.Fatalf("a nearly full directory: %d bytes of room", room)
+	}
+	// A cache that has not yet grown to its bound keeps that room for itself.
+	if a, b := journalRoom(1<<20, 1<<20, defaultCacheBytes, share), journalRoom(1<<20, 1<<20, 2<<20, share); a >= b {
+		t.Fatalf("the cache's room to grow is counted: %d against %d", a, b)
+	}
 }

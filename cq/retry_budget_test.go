@@ -76,17 +76,22 @@ func TestLargePendingFileSurvivesSmallerRetryBudget(t *testing.T) {
 	}
 }
 
-func TestRetryBudgetStillHonorsFileSizeLimit(t *testing.T) {
+func TestNoFileIsSkippedForItsSize(t *testing.T) {
 	tb := table(t)
 	root := t.TempDir()
-	write(t, root, "large.go", "package fixture\n"+strings.Repeat("var value = 1234567890\n", 6000))
+	write(t, root, "large.go", "package fixture\n"+strings.Repeat("var value = 1234567890\n", 12000))
 	fs := &OSFS{Root: root}
-	scan, err := NewScan(fs, "size-limit", "fixture", "", nil, nil, false, 100, 131072)
+	scan, err := NewScan(fs, "size", "fixture", "", nil, nil, false, 100, SegmentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	judge := &failJudge{}
-	if records, err := scan.Step(tb, fs, judge, MemCache{}, 3, 400); err != nil || len(records) != 0 || scan.Status != "done" || scan.Excluded["oversize"] != 1 || judge.calls != 0 {
-		t.Fatalf("file size limit changed: records=%d err=%v scan=%+v calls=%d", len(records), err, scan, judge.calls)
+	judge := &fakeJudge{p: 0.1}
+	for i := 0; i < 500 && scan.Status == "running"; i++ {
+		if _, err := scan.Step(tb, fs, judge, MemCache{}, 12, 400); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if scan.Status != "done" || scan.FilesJudged != 1 || len(scan.Excluded) != 0 || scan.File != nil || judge.calls == 0 {
+		t.Fatalf("scan %+v, %d calls", scan, judge.calls)
 	}
 }

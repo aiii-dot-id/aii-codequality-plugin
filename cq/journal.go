@@ -69,6 +69,13 @@ func validateJournalEvent(e JournalEvent) error {
 }
 
 func (j *Journal) Walk(offset int64, visit func(JournalEvent) error) (end int64, err error) {
+	if visit == nil {
+		return j.WalkAt(offset, nil)
+	}
+	return j.WalkAt(offset, func(e JournalEvent, _, _ int64) error { return visit(e) })
+}
+
+func (j *Journal) WalkAt(offset int64, visit func(e JournalEvent, at, next int64) error) (end int64, err error) {
 	end = offset
 	limit, err := j.limit()
 	if err != nil {
@@ -140,7 +147,7 @@ func (j *Journal) Walk(offset int64, visit func(JournalEvent) error) (end int64,
 				return end, err
 			}
 			if visit != nil {
-				if err := visit(event); err != nil {
+				if err := visit(event, end, end+int64(len(line))); err != nil {
 					return end, err
 				}
 			}
@@ -161,13 +168,16 @@ func (j *Journal) Append(event JournalEvent) (end int64, err error) {
 	if err != nil {
 		return end, err
 	}
-	return j.appendAt(end, event)
+	return j.appendAt(end, 0, event)
 }
 
-func (j *Journal) appendAt(end int64, event JournalEvent) (int64, error) {
+func (j *Journal) appendAt(end, most int64, event JournalEvent) (int64, error) {
 	limit, err := j.limit()
 	if err != nil {
 		return 0, err
+	}
+	if most > 0 {
+		limit = min(limit, most)
 	}
 	if err := validateJournalEvent(event); err != nil {
 		return 0, err

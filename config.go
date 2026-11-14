@@ -24,15 +24,17 @@ const (
 )
 
 const (
-	defaultStepMS       = 24000
-	defaultMaxCallMS    = 8000
-	defaultMaxCalls     = 12
-	defaultRetryCalls   = 3
-	defaultMaxFileBytes = 128 << 10
-	maximumFileBytes    = 192 << 10
-	defaultKeepScans    = 8
-	defaultCacheBytes   = 32 << 20
-	defaultRetryBudget  = int64(cq.DefaultRequestRetries)
+	defaultStepMS     = 24000
+	defaultMaxCallMS  = 8000
+	defaultMaxCalls   = 12
+	defaultRetryCalls = 3
+
+	maximumFileBytes = 192 << 10
+
+	keepEveryScan        = 0
+	defaultRetentionDays = 30
+	defaultCacheBytes    = 16 << 20
+	defaultRetryBudget   = int64(cq.DefaultRequestRetries)
 )
 
 type bound struct {
@@ -47,8 +49,8 @@ var bounds = []bound{
 	{"max_calls_per_step", defaultMaxCalls, 1, 64},
 	{"retry_calls", defaultRetryCalls, 1, 64},
 	{"chunk_bytes", cq.ChunkBytes, 2048, 131072},
-	{"max_file_bytes", defaultMaxFileBytes, 1024, maximumFileBytes},
-	{"keep_scans", defaultKeepScans, 1, 256},
+	{"keep_scans", keepEveryScan, 1, 256},
+	{"scan_retention_days", defaultRetentionDays, 1, 3650},
 	{"cache_max_bytes", defaultCacheBytes, 1 << 20, 256 << 20},
 	{"retry_budget", defaultRetryBudget, 0, int64(cq.MaxRequestRetries)},
 }
@@ -61,23 +63,26 @@ type settingsReader interface {
 }
 
 type config struct {
-	backend   string
-	handle    string
-	model     string
-	localBase string
-	ints      map[string]int64
-	scheduled bool
+	backend    string
+	handle     string
+	model      string
+	localBase  string
+	ints       map[string]int64
+	scheduled  bool
+	thresholds cq.Thresholds
 }
 
-func (c config) stepMS() int         { return int(c.ints["step_ms"]) }
-func (c config) maxCallMS() int      { return int(c.ints["max_call_ms"]) }
-func (c config) maxCalls() int       { return int(c.ints["max_calls_per_step"]) }
-func (c config) retryCalls() int     { return int(c.ints["retry_calls"]) }
-func (c config) chunkBytes() int     { return int(c.ints["chunk_bytes"]) }
-func (c config) maxFileBytes() int64 { return c.ints["max_file_bytes"] }
-func (c config) keepScans() int      { return int(c.ints["keep_scans"]) }
-func (c config) cacheBytes() int64   { return c.ints["cache_max_bytes"] }
-func (c config) retryBudget() int64  { return c.ints["retry_budget"] }
+func (c config) stepMS() int        { return int(c.ints["step_ms"]) }
+func (c config) maxCallMS() int     { return int(c.ints["max_call_ms"]) }
+func (c config) maxCalls() int      { return int(c.ints["max_calls_per_step"]) }
+func (c config) retryCalls() int    { return int(c.ints["retry_calls"]) }
+func (c config) chunkBytes() int    { return int(c.ints["chunk_bytes"]) }
+func (c config) keepScans() int     { return int(c.ints["keep_scans"]) }
+func (c config) retentionDays() int { return int(c.ints["scan_retention_days"]) }
+
+func (c config) sizeThresholds() cq.Thresholds { return c.thresholds }
+func (c config) cacheBytes() int64             { return c.ints["cache_max_bytes"] }
+func (c config) retryBudget() int64            { return c.ints["retry_budget"] }
 
 func (c config) callMS(calls int) int { return min(c.maxCallMS(), c.stepMS()/max(calls, 1)) }
 
@@ -119,6 +124,14 @@ func configFrom(v settingsReader) (config, error) {
 	}
 	if on, ok := v.Bool("scheduled_steps"); ok {
 		c.scheduled = on
+	}
+	c.thresholds = cq.DefaultThresholds
+	if raw, ok := v.String("finding_thresholds"); ok && strings.TrimSpace(raw) != "" {
+		th, key, why := cq.ParseThresholds(raw)
+		if key != "" {
+			return c, sdk.Fail("JUDGE_CONFIGURATION_INVALID", fmt.Sprintf(configurationInvalid, "finding_thresholds: "+key, why))
+		}
+		c.thresholds = th
 	}
 	return c, nil
 }

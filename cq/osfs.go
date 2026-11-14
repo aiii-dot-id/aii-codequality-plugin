@@ -56,7 +56,27 @@ func (f *OSFS) Read(file string, max int64) ([]byte, error) {
 	return b, nil
 }
 
+func (f *OSFS) ReadAt(file string, off int64, n int) ([]byte, bool, error) {
+	h, err := os.Open(filepath.Join(f.Root, filepath.FromSlash(file)))
+	if err != nil {
+		return nil, false, err
+	}
+	defer h.Close()
+	info, err := h.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if off >= info.Size() {
+		return nil, true, nil
+	}
+	b := make([]byte, min(int64(n), info.Size()-off))
+	if _, err := h.ReadAt(b, off); err != nil && err != io.EOF {
+		return nil, false, err
+	}
+	return b, off+int64(len(b)) >= info.Size(), nil
+}
+
 type MemCache map[string]json.RawMessage
 
-func (m MemCache) Get(k string) (json.RawMessage, bool)  { a, ok := m[k]; return a, ok }
-func (m MemCache) Put(k string, a json.RawMessage) error { m[k] = a; return nil }
+func (m MemCache) Get(k string) (json.RawMessage, bool, error) { a, ok := m[k]; return a, ok, nil }
+func (m MemCache) Put(k string, a json.RawMessage) error       { m[k] = a; return nil }

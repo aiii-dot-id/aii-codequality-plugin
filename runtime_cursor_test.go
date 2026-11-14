@@ -16,6 +16,11 @@ func (oneFileFS) List(string) ([]cq.Entry, bool, error) {
 	return []cq.Entry{{Name: "x.go", Size: int64(len(goSource))}}, false, nil
 }
 func (oneFileFS) Read(string, int64) ([]byte, error) { return []byte(goSource), nil }
+func (oneFileFS) ReadAt(_ string, off int64, n int) ([]byte, bool, error) {
+	off = min(off, int64(len(goSource)))
+	end := min(off+int64(n), int64(len(goSource)))
+	return []byte(goSource[off:end]), end == int64(len(goSource)), nil
+}
 
 func TestRuntimeCheckpointKeepsCommittedCursor(t *testing.T) {
 	cfg := config{backend: backendLocal, localBase: "https://fixture.invalid", model: "fixed", ints: defaultInts()}

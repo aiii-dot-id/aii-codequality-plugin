@@ -49,9 +49,7 @@ func units(text string, firstLine int, inString []bool, limit int) []Unit {
 				break
 			}
 		}
-		if len(head) > 72 {
-			head = head[:72]
-		}
+		head = clip(head, 72)
 		first, last := firstLine+s[0], firstLine+lastNonBlank(lines, s[0], s[1])
 		out = append(out, Unit{Key: fmt.Sprintf("lines %d-%d: %s", first, last, head), First: first, Last: last,
 			Text: strings.Join(lines[s[0]:s[1]], "\n")})

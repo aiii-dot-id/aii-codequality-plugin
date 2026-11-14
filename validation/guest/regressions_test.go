@@ -132,15 +132,11 @@ func TestGuestReportAnswersAboveFiveMiB(t *testing.T) {
 				began := time.Now()
 				r, _ := releaseInvoke(t, w, "report", object{"scan_id": "big", "shape": shape}, object{})
 				out := releaseSuccess(t, r)
-				incomplete := out["complete"] == false
-				if review, ok := out["review"].(map[string]any); ok {
-					incomplete = review["report_complete"] == false
+				if out["complete"] == false || out["note"] != nil {
+					t.Fatalf("%s on a %d-byte journal ranks a part: %.300s", shape, n, raw(out))
 				}
-				if !incomplete {
-					t.Fatalf("%s on a %d-byte journal claims a complete report: %.300s", shape, n, raw(out))
-				}
-				if note, _ := out["note"].(string); !strings.Contains(note, "narrower scan") {
-					t.Fatalf("%s ranks a prefix without the note and its route: %.300s", shape, raw(out))
+				if review, ok := out["review"].(map[string]any); ok && review["report_complete"] != true {
+					t.Fatalf("%s on a %d-byte journal is not complete: %.300s", shape, n, raw(out))
 				}
 				t.Logf("%s on a %d-byte journal: %v", shape, n, time.Since(began).Round(time.Millisecond))
 			}

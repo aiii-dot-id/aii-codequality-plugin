@@ -75,7 +75,9 @@ func TestSeriousFindingNotAveragedAway(t *testing.T) {
 		t.Fatalf("legacy counterexample changed: %+v", serious)
 	}
 	report := BuildReview([]Record{style, serious}, []Coverage{completeFixture(style), completeFixture(serious)}, true, true, "")
-	if len(report.Files) != 2 || report.Files[0].Ref != serious.Ref || !strings.Contains(report.Files[0].SelectionReason, "high") {
+
+	if len(report.Files) != 2 || report.Files[0].Ref != serious.Ref || report.Files[0].Tier != TierUnpinned ||
+		!strings.Contains(report.Files[0].SelectionReason, "tier unpinned") {
 		t.Fatalf("averaged away: %+v", report.Files)
 	}
 	if !report.AssessmentComplete {

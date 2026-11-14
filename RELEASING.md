@@ -94,7 +94,7 @@ aiisdk package
 information. Build success is not an executed guest. Packaging creates an
 **unsigned candidate**, not a release eligible for installation or key attachment.
 Record guest/package/manifest hashes and inspect declared metadata. The current
-module names SDK v0.1.18; the historical f86854c settings-metadata fix is not a
+module names SDK v0.2.2; the historical f86854c settings-metadata fix is not a
 substitute for checking actual packaged `choices_from`, grants, schemas and
 versions. The old “runtime dependency v0.1.10” note no longer describes this module;
 the declared host floor requires separate compatibility evidence.

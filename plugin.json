@@ -1,7 +1,7 @@
 {
   "id": "id.aiii.codequality",
-  "version": "0.1.15",
-  "aiios_min_version": "0.1.10",
+  "version": "0.2.2",
+  "aiios_min_version": "0.2.2",
   "plugin_family": "tool_bridge",
   "publisher": "AI Identity Incorporated",
   "title": "Code quality (Jev)",
@@ -159,29 +159,35 @@
       "maximum": 131072
     },
     {
-      "key": "max_file_bytes",
-      "type": "integer",
-      "title": "File size cap, bytes",
-      "description": "Maximum raw source file bytes; larger files remain visible as coverage gaps. Requests use bounded contextual windows.",
-      "default": 131072,
-      "minimum": 1024,
-      "maximum": 196608
-    },
-    {
       "key": "keep_scans",
       "type": "integer",
-      "title": "Scans kept",
-      "description": "how many of the most recent scans are kept; starting one more removes the oldest",
-      "default": 8,
+      "title": "Scans kept (retired)",
+      "description": "Retired in 0.2.0-r2 and ignored: scans are kept until they expire (scan_retention_days). Clear it: an earlier version of this plugin still removes scans by it",
       "minimum": 1,
       "maximum": 256
+    },
+    {
+      "key": "finding_thresholds",
+      "type": "string",
+      "title": "Finding thresholds",
+      "description": "key=value pairs, applied when a report is read, so a change needs no rescan: large_file_lines (default 1000), very_large_file_lines (2000), dup_lines (6), nesting (4), params (6). A key left out takes its default; an unknown key is refused",
+      "default": "large_file_lines=1000 very_large_file_lines=2000 dup_lines=6 nesting=4 params=6"
+    },
+    {
+      "key": "scan_retention_days",
+      "type": "integer",
+      "title": "Days a scan is kept",
+      "description": "a scan is removed this many days after its last write (its start or a step). Reading a report does not extend it. An unexpired scan is never removed to make room: a start with too little room is refused",
+      "default": 30,
+      "minimum": 1,
+      "maximum": 3650
     },
     {
       "key": "cache_max_bytes",
       "type": "integer",
       "title": "Answer cache, bytes",
-      "description": "the most the answer cache keeps, in sixteen files; past its share a file keeps its newest answers",
-      "default": 33554432,
+      "description": "the most the answer cache keeps, in 256 files; past its share a file keeps its newest answers",
+      "default": 16777216,
       "minimum": 1048576,
       "maximum": 268435456
     },

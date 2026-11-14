@@ -47,11 +47,17 @@ func denied() json.RawMessage {
 type broker struct {
 	files                                                 map[string][]byte
 	sources                                               map[string]string
+	tree                                                  string
+	listPage                                              int
+	yes                                                   map[string]bool
 	readAttempts                                          map[string]int
 	submitted                                             map[string]int
 	maxFileBytes                                          int
+	extraSettings                                         object
 	failDocs                                              bool
 	refuseMarker                                          string
+	failOutline                                           int
+	asked                                                 map[string]int
 	source, baseURL, configuredModel, responseModel       string
 	nowMS                                                 int64
 	maxEscaping, sourceReads                              int
@@ -80,6 +86,9 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 			Offset      int    `json:"offset"`
 			Length      int    `json:"length"`
 			Digest      bool   `json:"digest"`
+			From        string `json:"from"`
+			SHA256      string `json:"sha256"`
+			After       string `json:"after"`
 		} `json:"arguments"`
 	}
 	if json.Unmarshal(params, &p) != nil {
@@ -92,6 +101,9 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 		values := object{"backend": "local", "local_judge_url": b.baseURL, "model": b.configuredModel, "scheduled_steps": false, "max_calls_per_step": 12, "retry_calls": 12}
 		if b.maxFileBytes != 0 {
 			values["max_file_bytes"] = b.maxFileBytes
+		}
+		for k, v := range b.extraSettings {
+			values[k] = v
 		}
 		return ok(object{"values": values}), nil
 	case "http.post":
@@ -118,6 +130,12 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 				b.submitted[name]++
 			}
 		}
+		if b.asked == nil {
+			b.asked = map[string]int{}
+		}
+		for id := range req.Questions {
+			b.asked[id]++
+		}
 		docs := req.State["source"] != nil
 		choices := false
 		for _, q := range req.Questions {
@@ -135,6 +153,10 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 		if b.refuseMarker != "" && strings.Contains(state, b.refuseMarker) {
 			return raw(object{"status": "failed", "reasonCode": "NET_REMOTE_OUTCOME_FAILED", "operation_result": object{"http_status": 403, "body": "<html>Attention Required</html>"}}), nil
 		}
+		if _, outline := req.State["outline"]; outline && b.failOutline > 0 {
+			b.failOutline--
+			return raw(object{"status": "failed", "reasonCode": "NET_REMOTE_OUTCOME_FAILED", "operation_result": object{"http_status": 503, "body": object{"error": "injected outline failure"}}}), nil
+		}
 		if docs && b.failDocs {
 			return raw(object{"status": "failed", "reasonCode": "NET_REMOTE_OUTCOME_FAILED", "operation_result": object{"http_status": 503, "retry_after_s": 120, "body": object{"error": "injected docs failure"}}}), nil
 		}
@@ -144,7 +166,7 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 				answers[id] = object{"choice": "cannot_localize", "confidence": 0.99}
 			} else {
 				p := 0.123456789
-				if id == "EH-01" {
+				if id == "EH-01" || b.yes[id] {
 					p = 0.987654321
 				}
 				answers[id] = object{"type": "Noul", "noul": p}
@@ -152,12 +174,15 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 		}
 		b.httpSuccess++
 		return ok(object{"http_status": 200, "content_type": "application/json", "body": object{"model": b.responseModel, "answers": answers}}), nil
-	case "fs.list", "fs.read", "fs.write", "fs.delete":
+	case "fs.list", "fs.read", "fs.write", "fs.delete", "fs.publish":
 		root, name := p.Target["root"], p.Target["path"]
 		if path.IsAbs(name) || strings.Contains(name, "\\") || strings.Contains(name, "\x00") || (name != "" && path.Clean(name) != name) || name == ".." || strings.HasPrefix(name, "../") {
 			return nil, denied()
 		}
 		if root == "sandbox" {
+			if b.tree != "" {
+				return b.serveTree(p.Operation, name, p.Arguments.After, p.Arguments.Offset, p.Arguments.Length, p.Arguments.Digest)
+			}
 			if b.sources != nil {
 				if p.Operation == "fs.list" && name == "fixture" {
 					keys := make([]string, 0, len(b.sources))
@@ -189,7 +214,7 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 			}
 			return nil, denied()
 		}
-		if root != "private" || !(name == "scans" || strings.HasPrefix(name, "scans/") || strings.HasPrefix(name, "cache/")) {
+		if root != "private" || !(name == "scans" || name == "cache" || strings.HasPrefix(name, "scans/") || strings.HasPrefix(name, "cache/")) {
 			return nil, denied()
 		}
 		switch p.Operation {
@@ -209,6 +234,16 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 			}
 			b.files[name] = data
 			return ok(object{"size": len(data)}), nil
+		case "fs.publish":
+
+			staged, have := b.files[p.Arguments.From]
+			if !have || fmt.Sprintf("%x", sha256.Sum256(staged)) != p.Arguments.SHA256 {
+				return failed("FS_PUBLISH_FAILED"), nil
+			}
+			_, replaced := b.files[name]
+			b.files[name] = staged
+			delete(b.files, p.Arguments.From)
+			return ok(object{"size": len(staged), "sha256": p.Arguments.SHA256, "replaced": replaced, "durable": true}), nil
 		case "fs.delete":
 			_, exists := b.files[name]
 			delete(b.files, name)
@@ -230,6 +265,46 @@ func (b *broker) dispatch(method string, params json.RawMessage) (json.RawMessag
 	}
 	return nil, denied()
 }
+
+func (b *broker) serveTree(op, name, after string, off, n int, digest bool) (json.RawMessage, json.RawMessage) {
+	if name != "fixture" && !strings.HasPrefix(name, "fixture/") {
+		return nil, denied()
+	}
+	at := filepath.Join(b.tree, filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(name, "fixture"), "/")))
+	switch op {
+	case "fs.list":
+		es, err := os.ReadDir(at)
+		if err != nil {
+			return failed("FS_NOT_FOUND"), nil
+		}
+		entries := []any{}
+		more := false
+		for _, e := range es {
+			if b.listPage > 0 && after != "" && e.Name() <= after {
+				continue
+			}
+			if b.listPage > 0 && len(entries) == b.listPage {
+				more = true
+				break
+			}
+			info, err := e.Info()
+			if err != nil {
+				return nil, denied()
+			}
+			entries = append(entries, object{"name": e.Name(), "dir": e.IsDir(), "size": info.Size(), "symlink": e.Type()&os.ModeSymlink != 0})
+		}
+		return ok(object{"entries": entries, "truncated": more}), nil
+	case "fs.read":
+		data, err := os.ReadFile(at)
+		if err != nil {
+			return failed("FS_NOT_FOUND"), nil
+		}
+		b.sourceReads++
+		return fileRead(data, off, n, digest), nil
+	}
+	return nil, denied()
+}
+
 func fileRead(data []byte, off, n int, digest bool) json.RawMessage {
 	if off < 0 || off > len(data) || n < 0 {
 		return failed("FS_INVALID_RANGE")
@@ -439,8 +514,22 @@ func objectOf(t *testing.T, p []byte) object {
 	}
 	return o
 }
+
 func report(t *testing.T, w *worker, shape string) object {
-	return objectOf(t, w.invoke("report", object{"scan_id": "guest_fixture", "shape": shape}))["review"].(map[string]any)
+	args := object{"scan_id": "guest_fixture", "shape": shape}
+	if shape == "review_queue" {
+		args["tier"] = "all"
+	}
+	return objectOf(t, w.invoke("report", args))["review"].(map[string]any)
+}
+
+func plainQueue(t *testing.T, w *worker) {
+	t.Helper()
+	q := objectOf(t, w.invoke("report", object{"scan_id": "guest_fixture", "shape": "review_queue"}))["review"].(map[string]any)
+	counts, _ := q["tier_counts"].(map[string]any)
+	if len(q["entries"].([]any)) != 0 || counts["unpinned"] != 1.0 {
+		t.Fatalf("plain queue: %s", raw(q))
+	}
 }
 func finding(t *testing.T, review object) {
 	t.Helper()
@@ -473,14 +562,17 @@ func TestGuestHostContracts(t *testing.T) {
 	if partial["status"] != "judge_unavailable" || b.codeCalls != 1 || b.docsCalls != 1 {
 		t.Fatalf("failure not exercised: %s code=%d docs=%d", raw(partial), b.codeCalls, b.docsCalls)
 	}
+	plainQueue(t, w)
 	q := report(t, w, "review_queue")
 	finding(t, q)
 	gap := report(t, w, "coverage")
 	if gap["total_entries"].(float64) < 1 || gap["assessment_complete"] != false {
 		t.Fatalf("missing partial coverage %s", raw(gap))
 	}
-	if !bytes.Contains(raw(gap), []byte("missing_answers")) {
-		t.Fatalf("failed docs not visible in coverage: %s", raw(gap))
+
+	stopped := gap["entries"].([]any)[0].(map[string]any)
+	if stopped["completed_chunks"] != nil || stopped["expected_chunks"] != 1.0 || !bytes.Contains(raw(stopped["reason_codes"]), []byte("assessment_interrupted")) {
+		t.Fatalf("the stop is not visible in coverage: %s", raw(gap))
 	}
 	assertJournal(t, b.files["scans/guest_fixture.v2.jsonl"], false)
 	firstMaxFrame, firstMaxResult := w.maxFrame, w.maxResult
@@ -512,8 +604,9 @@ func TestGuestHostContracts(t *testing.T) {
 	t.Logf("persisted Retry-After blocked through deadline-1; advanced synthetic clock to %d", b.nowMS)
 	done := objectOf(t, w.invoke("scan", object{"action": "step", "scan_id": "guest_fixture"}))
 	t.Logf("resumed scan=%s", raw(done))
-	if done["status"] != "done" || done["files_judged"] != float64(1) || done["chunks"] != float64(1) || b.codeCalls != 1 || b.docsCalls != 2 {
-		t.Fatalf("retry re-asked code or did not finish: %s code=%d docs=%d", raw(done), b.codeCalls, b.docsCalls)
+
+	if done["status"] != "done" || done["files_judged"] != float64(1) || done["chunks"] != float64(1) || b.asked["RD-01"] != 1 || b.asked["DC-01"] != 1 || b.asked["q1"] != 2 {
+		t.Fatalf("retry re-asked code or did not finish: %s asked RD-01 %d, DC-01 %d, intent %d", raw(done), b.asked["RD-01"], b.asked["DC-01"], b.asked["q1"])
 	}
 	q = report(t, w, "review_queue")
 	finding(t, q)
@@ -568,8 +661,13 @@ func assertJournal(t *testing.T, data []byte, complete bool) {
 			records[id] = record
 		}
 	}
-	if len(records) != 2 {
-		t.Fatalf("want two stable battery IDs, got %d", len(records))
+
+	want := 1
+	if complete {
+		want = 2
+	}
+	if len(records) != want {
+		t.Fatalf("want %d stable battery IDs, got %d", want, len(records))
 	}
 	found := false
 	missing := 0
@@ -587,7 +685,7 @@ func assertJournal(t *testing.T, data []byte, complete bool) {
 			}
 		}
 	}
-	if !found || (complete && missing != 0) || (!complete && missing == 0) {
+	if !found || missing != 0 {
 		t.Fatalf("journal coverage mismatch: found=%t missing=%d complete=%t", found, missing, complete)
 	}
 }

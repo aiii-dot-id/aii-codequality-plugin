@@ -38,10 +38,10 @@ func FaultsOf(recs []Record) map[string]string {
 
 func Summary(recs []Record, worst int) map[string]any {
 	bands := map[string]int{}
-	type agg struct{ lines, weighted, chunks int }
-	byLang := map[string]*agg{}
+	byLang := map[string]*summaryAgg{}
 	findings, leads := map[string]int{}, map[string]int{}
-	all := agg{}
+	all := summaryAgg{}
+	addWindows(recs, &all, byLang)
 	var judged []Record
 	for _, r := range recs {
 		if r.Skipped != "" || r.Band == "" {
@@ -52,13 +52,12 @@ func Summary(recs []Record, worst int) map[string]any {
 		bands[r.Band]++
 		a := byLang[r.Language]
 		if a == nil {
-			a = &agg{}
+			a = &summaryAgg{}
 			byLang[r.Language] = a
 		}
-		for _, x := range []*agg{a, &all} {
-			x.lines += lines
+		for _, x := range []*summaryAgg{a, &all} {
+			x.scored += lines
 			x.weighted += lines * r.Index
-			x.chunks++
 		}
 		for _, f := range r.Findings {
 			if Lead(f.ID) {
@@ -68,11 +67,11 @@ func Summary(recs []Record, worst int) map[string]any {
 			}
 		}
 	}
-	mean := func(a *agg) any {
-		if a.lines == 0 {
+	mean := func(a *summaryAgg) any {
+		if a.scored == 0 {
 			return nil
 		}
-		return a.weighted / a.lines
+		return a.weighted / a.scored
 	}
 	langs := map[string]any{}
 	for k, a := range byLang {
@@ -106,9 +105,26 @@ func Summary(recs []Record, worst int) map[string]any {
 	for id := range leads {
 		ids = append(ids, id)
 	}
-	return map[string]any{"chunks_judged": all.chunks, "lines": all.lines, "index": mean(&all), "bands": bands,
+	var top []rankedRow
+	var intent IntentCounts
+	var slop slopCounts
+	noCode := 0
+	for _, f := range BuildReview(recs, nil, false, true, "slop").Files {
+		noCode += f.NoCode
+		DefaultThresholds.markWith(&f, nil)
+		slop.add(f)
+		if row, ok := pinnedRow(f); ok {
+			top = topRows(top, row, worst)
+		}
+		if f.Intent != nil {
+			intent.Add(*f.Intent)
+		}
+	}
+	return map[string]any{"chunks_judged": all.chunks, "no_code_windows": noCode, "lines": all.lines, "index": mean(&all), "bands": bands,
 		"languages": langs, "finding_counts": findings, "lead_counts": leads, "faults": Faults(ids), "worst": w,
-		"recommended_shape": "review_queue", "coverage_shape": "coverage",
+		"worst_basis": worstBasis, "top_correctness": correctnessRows(top), "intent": intent.result(), NotAssessedEarlier: 0, "out_of_scope": scopeCounts(nil), "size_findings": map[string]int{"large_file": 0, "very_large_file": 0},
+		"slop": slop.result(), "thresholds": DefaultThresholds.Effective(),
+		"recommended_shape": "triage", "coverage_shape": "coverage",
 		"score_caveat": scoreCaveat}
 }
 
@@ -117,7 +133,7 @@ var severityRank = map[string]int{"low": 0, "medium": 1, "high": 2}
 func Select(recs []Record, glob, minSeverity, language string) []Record {
 	var out []Record
 	for _, r := range recs {
-		if language != "" && r.Language != language || !Match(glob, r.Ref) {
+		if language != "" && !contains(strings.Split(r.Language, "+"), language) || !Match(glob, r.Ref) {
 			continue
 		}
 		kept := r.Findings[:0:0]
@@ -173,8 +189,9 @@ func Page(recs []Record, offset, pageBytes int) ([]Record, int) {
 	for i := max(offset, 0); i < len(recs); i++ {
 		r := recs[i]
 		MarkLeads([]Record{r})
-		r.Answers = nil
-		b, _ := json.Marshal(r)
+		shown := r
+		shown.Answers = nil
+		b, _ := json.Marshal(shown)
 		if size+len(b) > pageBytes && len(out) > 0 {
 			return out, i
 		}

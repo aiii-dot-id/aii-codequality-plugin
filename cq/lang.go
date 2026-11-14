@@ -189,3 +189,61 @@ func (t *Table) IsTest(lang, rel string) bool {
 	}
 	return L.Tests.MatchString(path.Base(rel)) || L.Tests.MatchString("/"+rel)
 }
+
+var fenceNames = map[string]string{"js": "javascript", "ts": "typescript", "py": "python", "sh": "shell", "bash": "shell",
+	"zsh": "shell", "yml": "yaml", "rb": "ruby", "rs": "rust", "kt": "kotlin", "cs": "csharp", "c++": "cpp", "golang": "go"}
+
+func (t *Table) FileLanguages(lang string, text []byte) []string {
+	other := map[string]bool{}
+	s := string(text)
+	switch lang {
+	case "html":
+		lower := strings.ToLower(s)
+		if strings.Contains(lower, "<script") {
+			if strings.Contains(lower, `lang="ts"`) || strings.Contains(lower, `type="text/typescript"`) {
+				other["typescript"] = true
+			} else {
+				other["javascript"] = true
+			}
+		}
+		if strings.Contains(lower, "<style") {
+			other["css"] = true
+		}
+	case "markdown":
+		for _, line := range strings.Split(s, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "```") {
+				continue
+			}
+			name := strings.ToLower(strings.TrimSpace(strings.TrimLeft(line, "`")))
+			if i := strings.IndexAny(name, " {,"); i >= 0 {
+				name = name[:i]
+			}
+			if n, ok := fenceNames[name]; ok {
+				name = n
+			}
+			if name != "" && t.Langs[name] != nil {
+				other[name] = true
+			}
+		}
+	}
+	delete(other, lang)
+	out := []string{lang}
+	keys := make([]string, 0, len(other))
+	for k := range other {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return append(out, keys...)
+}
+
+func LanguageLabel(langs []string) string { return strings.Join(langs, "+") }
+
+func (t *Table) Known() []string {
+	out := make([]string, 0, len(t.Langs))
+	for k := range t.Langs {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

@@ -14,8 +14,16 @@ func (s *Scan) cover(c Coverage) error {
 	s.Observed = append(s.Observed, c)
 	return nil
 }
+
+var chosenSkips = map[string]bool{"global_dir": true, "language_dir": true, "gitignore": true, "caller_exclude": true,
+	"nested_repository": true, "symlink": true, IgnoredDir: true}
+
 func (s *Scan) boundary(ref, reason string) error {
-	return s.cover(Coverage{Ref: ref, Kind: "subtree", Disposition: "unknown", Reasons: []string{reason, "children_not_enumerated"}})
+	disposition := "unknown"
+	if chosenSkips[reason] {
+		disposition = "excluded"
+	}
+	return s.cover(Coverage{Ref: ref, Kind: "subtree", Disposition: disposition, Reasons: []string{reason, "children_not_enumerated"}})
 }
 
 func recordWindows(rs []Record) int {

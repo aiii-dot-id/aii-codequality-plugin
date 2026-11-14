@@ -21,7 +21,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 180000,
-            "description": "The source text. Each item must also fit max_file_bytes in UTF-8 bytes (128 KiB by default, at most 192 KiB); the character limit here does not replace that byte limit. Oversized input is refused before inference."
+            "description": "The source text. Each item must also fit max_file_bytes in UTF-8 bytes (192 KiB by default, and at most); the character limit here does not replace that byte limit. Oversized input is refused before inference."
           },
           "language": {
             "type": "string",

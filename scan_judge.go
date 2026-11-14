@@ -11,6 +11,8 @@ import (
 	sdk "github.com/aiii-dot-id/aii-plugin-sdk/pkg/aiiosdk"
 )
 
+const blockedMost = 200
+
 type scanRequestState struct {
 	Pin        ModelPin        `json:"pin"`
 	Retry      cq.RequestRetry `json:"retry"`
@@ -56,13 +58,24 @@ func (j *hostJudge) bindScan(cfg config, s *cq.Scan, nowMS int64) error {
 	j.retryBaseMS = nowMS + int64(cfg.stepMS()) + invokeSlackMS
 	j.retryBudget = uint32(cfg.retryBudget())
 
-	cursorBytes, err := json.Marshal(s)
+	committed, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	var cursor cq.Scan
-	if err = json.Unmarshal(cursorBytes, &cursor); err != nil {
-		return err
+	var cursor *cq.Scan
+	if save := s.Checkpoint; save != nil {
+		s.Checkpoint = func() error {
+			if err := save(); err != nil {
+				return err
+			}
+
+			b, err := json.Marshal(s)
+			if err != nil {
+				return err
+			}
+			committed, cursor = b, nil
+			return nil
+		}
 	}
 	write := j.writeRuntimeCheckpoint
 	if write == nil {
@@ -73,8 +86,15 @@ func (j *hostJudge) bindScan(cfg config, s *cq.Scan, nowMS int64) error {
 		if err != nil {
 			return err
 		}
+		if cursor == nil {
+			var c cq.Scan
+			if err := json.Unmarshal(committed, &c); err != nil {
+				return err
+			}
+			cursor = &c
+		}
 		cursor.Runtime = raw
-		b, err := json.Marshal(&cursor)
+		b, err := json.Marshal(cursor)
 		if err != nil {
 			return err
 		}
@@ -132,7 +152,7 @@ func (j *hostJudge) scanResponse(status int, raw []byte, retryAfter *int64) erro
 		case errors.Is(err, cq.ErrRetryExhausted):
 			next, cause = cq.RequestRetry{}, fmt.Errorf("%w; %w", failure, err)
 		case err != nil:
-			j.runtime.Blocked = err.Error()
+			j.runtime.Blocked = cq.Clip(err.Error(), blockedMost)
 		}
 		j.runtime.Retry = next
 		if err := j.persistRuntime(); err != nil {
@@ -142,7 +162,7 @@ func (j *hostJudge) scanResponse(status int, raw []byte, retryAfter *int64) erro
 	}
 	pin, err := j.runtime.Pin.WithResponse(raw)
 	if err != nil {
-		j.runtime.Blocked = err.Error()
+		j.runtime.Blocked = cq.Clip(err.Error(), blockedMost)
 		if saveErr := j.persistRuntime(); saveErr != nil {
 			return fmt.Errorf("%w: %w", cq.ErrProgress, saveErr)
 		}

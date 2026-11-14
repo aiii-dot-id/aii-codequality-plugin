@@ -7,9 +7,10 @@
       "type": "string",
       "enum": [
         "start",
-        "step"
+        "step",
+        "remove"
       ],
-      "description": "start a scan of a folder, or step an existing one."
+      "description": "start a scan of a folder, step an existing one, or remove the scans named in scan_ids. A scan is otherwise kept until it expires (scan_retention_days after its last write)."
     },
     "path": {
       "type": "string",
@@ -41,11 +42,27 @@
       "type": "boolean",
       "description": "start: judge test files too (default false). Tests can be a large share of a source tree, and each file costs about two judge calls, so include them when the tests themselves are what you want measured."
     },
+    "include_generated": {
+      "type": "boolean",
+      "description": "start: judge generated and minified files too (default false). They are otherwise out of scope. It does not lift the 1 MiB ceiling."
+    },
     "max_files": {
       "type": "integer",
       "minimum": 1,
       "maximum": 100000,
-      "description": "start: stop after this many files (default 5000)."
+      "description": "start: stop after this many files (default 30000)."
+    },
+    "scan_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "description": "remove: the scans to remove, by id. Every one must exist, or nothing is removed."
     },
     "scan_id": {
       "type": "string",

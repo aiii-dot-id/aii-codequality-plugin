@@ -22,6 +22,41 @@ type SourceWindow struct {
 
 //go:noinline
 func ContextWindows(t *Table, lang, source string, size int) ([]SourceWindow, error) {
+	return contextWindowsAt(t, lang, source, size, 1, false)
+}
+
+//go:noinline
+func contextWindowsAt(t *Table, lang, source string, size, firstLine int, limitedStart bool) ([]SourceWindow, error) {
+	return contextWindowsWith(t, lang, source, size, firstLine, limitedStart, nil)
+}
+
+type SegmentUnits struct {
+	Cuts     []int  `json:"cuts"`
+	Boundary string `json:"boundary"`
+}
+
+const unitGap = 256
+
+func (u *SegmentUnits) thin() *SegmentUnits {
+	if u == nil || len(u.Cuts) < 3 {
+		return u
+	}
+	cuts := []int{u.Cuts[0]}
+	for _, c := range u.Cuts[1 : len(u.Cuts)-1] {
+		if c-cuts[len(cuts)-1] >= unitGap {
+			cuts = append(cuts, c)
+		}
+	}
+	cuts = append(cuts, u.Cuts[len(u.Cuts)-1])
+	return &SegmentUnits{Cuts: cuts, Boundary: u.Boundary}
+}
+
+func unitsOf(source, lang string) *SegmentUnits {
+	cuts, boundary := windowUnits(source, lang)
+	return &SegmentUnits{Cuts: cuts, Boundary: boundary}
+}
+
+func contextWindowsWith(t *Table, lang, source string, size, firstLine int, limitedStart bool, units *SegmentUnits) ([]SourceWindow, error) {
 	if t == nil || t.Langs[lang] == nil {
 		return nil, fmt.Errorf("context windows: unknown language %q", lang)
 	}
@@ -53,11 +88,14 @@ func ContextWindows(t *Table, lang, source string, size int) ([]SourceWindow, er
 	context, secrets := windowRedact(source)
 	sort.Ints(secrets)
 	windowRedactBytes(code)
-	cuts, boundary := windowUnits(source, lang)
+	if units == nil {
+		units = unitsOf(source, lang)
+	}
+	cuts, boundary := units.Cuts, units.Boundary
 
-	limited := lost || boundary == "go_parse_fallback"
+	limited := lost || boundary == "go_parse_fallback" || limitedStart
 	var out []SourceWindow
-	line := 1
+	line := firstLine
 	commentIndex, secretIndex := 0, 0
 	for u := 0; u+1 < len(cuts); u++ {
 		start, end := cuts[u], cuts[u+1]
@@ -125,10 +163,41 @@ func windowUnits(source, lang string) ([]int, string) {
 	if lang != "go" {
 		return []int{0, len(source)}, "lexical"
 	}
-	fs := token.NewFileSet()
-	f, err := parser.ParseFile(fs, "", source, parser.ParseComments|parser.SkipObjectResolution)
-	if err != nil {
+	p := parseGoText(source)
+	if p.err != nil {
 		return []int{0, len(source)}, "go_parse_fallback"
+	}
+	defer forget(p.f)
+	return goCuts(p, source), "go_declaration"
+}
+
+const segmentClause = "package segment\n"
+
+type goParsed struct {
+	fset   *token.FileSet
+	f      *ast.File
+	clause bool
+	err    error
+}
+
+func parseGoText(source string) goParsed {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", sourceBytes(source), parser.ParseComments|parser.SkipObjectResolution)
+	if err == nil {
+		return goParsed{fset: fset, f: f}
+	}
+	if strings.HasPrefix(strings.TrimLeft(source, " \t\r\n"), "package ") {
+		return goParsed{err: err}
+	}
+	fset = token.NewFileSet()
+	f, err = parser.ParseFile(fset, "", segmentClause+source, parser.ParseComments|parser.SkipObjectResolution)
+	return goParsed{fset: fset, f: f, clause: true, err: err}
+}
+
+func goCuts(p goParsed, source string) []int {
+	fs, f, shift := p.fset, p.f, 0
+	if p.clause {
+		shift = len(segmentClause)
 	}
 	cuts := []int{0}
 	previousEndLine := 0
@@ -145,15 +214,15 @@ func windowUnits(source, lang string) ([]int, string) {
 			pos = doc.Pos()
 		}
 		p := fs.PositionFor(pos, false)
-		if i > 0 && p.Line > previousEndLine {
-			off := strings.LastIndexByte(source[:p.Offset], '\n') + 1
+		if i > 0 && p.Line > previousEndLine && p.Offset-shift > 0 {
+			off := strings.LastIndexByte(source[:p.Offset-shift], '\n') + 1
 			if off > cuts[len(cuts)-1] {
 				cuts = append(cuts, off)
 			}
 		}
 		previousEndLine = fs.PositionFor(d.End(), false).Line
 	}
-	return append(cuts, len(source)), "go_declaration"
+	return append(cuts, len(source))
 }
 
 //go:noinline
@@ -201,11 +270,21 @@ func windowRedactBytes(b []byte) {
 //go:noinline
 func windowBlank(source string, l *Lang) ([]byte, [][2]int, bool) {
 	b := []byte(source)
+	spans, lost := lexComments(source, l, b)
+	return b, spans, lost
+}
+
+func commentSpans(source string, l *Lang) [][2]int {
+	spans, _ := lexComments(source, l, nil)
+	return spans
+}
+
+func lexComments(source string, l *Lang, b []byte) ([][2]int, bool) {
 	var spans [][2]int
 	lost := false
 	mask := func(start, end int) {
 		spans = append(spans, [2]int{start, end})
-		for k := start; k < end; k++ {
+		for k := start; b != nil && k < end; k++ {
 			if b[k] != '\n' && b[k] != '\r' {
 				b[k] = ' '
 			}
@@ -290,5 +369,5 @@ func windowBlank(source string, l *Lang) ([]byte, [][2]int, bool) {
 		}
 		i++
 	}
-	return b, spans, lost || quote != 0
+	return spans, lost || quote != 0
 }

@@ -4,16 +4,18 @@
   "type": "object",
   "properties": {
     "scan_id": {"type": "string", "maxLength": 64, "description": "The scan to report; absent lists scans."},
-    "shape": {"type": "string", "enum": ["summary", "findings", "review_queue", "coverage"], "description": "review_queue: distinct files with allegations and evidence; coverage: unknown, partial and excluded paths. summary retains legacy chunk scores; findings pages chunk evidence."},
-    "worst": {"type": "integer", "minimum": 1, "maximum": 100, "description": "summary: how many lowest-index legacy chunks to list (default 10), not distinct files."},
+    "shape": {"type": "string", "enum": ["summary", "findings", "review_queue", "coverage", "triage"], "description": "triage: one short row per file (its tier, strongest finding and counts), correctness lane by default, with the files out of scope (out_of_scope) and those an earlier version did not assess (not_assessed_by_earlier_version) in the page header; review_queue: distinct files with allegations and evidence; coverage: unknown, partial and excluded paths. summary retains legacy chunk scores and lists top_correctness; findings pages chunk evidence."},
+    "worst": {"type": "integer", "minimum": 1, "maximum": 100, "description": "summary: how many lowest-index legacy chunks to list (default 10), not distinct files, and how many top_correctness files."},
     "cursor": {"type": "integer", "minimum": 0, "description": "findings: next_cursor of the previous page."},
     "page_bytes": {"type": "integer", "minimum": 4096, "maximum": 200000, "description": "Maximum bytes of page entries (default 131072); metadata is additional."},
     "min_severity": {"type": "string", "enum": ["low", "medium", "high"], "description": "findings: leave out findings below this severity."},
     "language": {"type": "string", "minLength": 1, "maxLength": 32, "description": "findings: one language only."},
-    "path": {"type": "string", "maxLength": 512, "description": "findings: a folder or glob; * within a name, ** for any depth. Dot or absent is every file."},
-    "lane": {"type": "string", "enum": ["correctness", "maintainability"], "description": "review_queue: one concern lane; absent combines both, correctness first. Ordering is an unvalidated candidate."},
-    "page_cursor": {"type": "string", "maxLength": 2048, "description": "review_queue or coverage: opaque next_page_cursor; changed evidence or query requires a fresh first page."},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "review_queue or coverage: maximum entries per page, default 20."}
+    "path": {"type": "string", "maxLength": 512, "description": "findings, review_queue, coverage or triage: a file, a folder or a glob; * within a name, ** for any depth. Dot or absent is every file. A triage row's ref here, with that row's lane, gives that file's whole evidence."},
+    "lane": {"type": "string", "enum": ["correctness", "maintainability", "size", "slop"], "description": "review_queue or triage: correctness and maintainability are concern lanes (absent combines both in review_queue, correctness first; triage defaults to correctness). size lists files with a size finding by line count; slop lists files with slop findings by count, each naming its two most frequent kinds. Size and slop are maintainability findings and never move a correctness tier. Thresholds come from finding_thresholds, applied when the report is read."},
+    "tier": {"type": "string", "enum": ["pinned", "unpinned", "intent_stated", "all"], "description": "review_queue or triage of the correctness lane, or of no lane: pinned (default) is p at least 0.80 placed with at least 0.60 confidence, not context-limited, no intent stated; unpinned is the rest; intent_stated is files whose only correctness findings have a comment saying the error is ignored on purpose. Both bounds are first picks, not yet measured."},
+    "page_cursor": {"type": "string", "maxLength": 2048, "description": "review_queue, coverage or triage: opaque next_page_cursor; changed evidence or query requires a fresh first page."},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "review_queue, coverage or triage: maximum entries per page, default 20 (triage 50)."},
+    "list_all": {"type": "boolean", "description": "review_queue or triage: list every finding the default view counts and does not list (counted_not_listed): SL-FORWARD for a pass-through function that is not a same-name wrapper, and RD-04 and ST-04. Without it each page and the summary give their totals, and neither ranks a file."}
   },
   "additionalProperties": false
 }

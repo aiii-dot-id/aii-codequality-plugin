@@ -16,7 +16,7 @@ var ErrProgress = errors.New("assessment progress not saved")
 
 var ErrInput = errors.New("input cannot be assessed")
 
-func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk int, prior []Record, save func(Record) error) ([]Record, error) {
+func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk int, prior []Record, save func(Record) error, intent bool, langs ...string) ([]Record, error) {
 
 	runtime.GC()
 	windows, err := boundedContextWindows(t, lang, text, chunk)
@@ -28,7 +28,22 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 	for start := 0; start < len(text); start += 32 << 10 {
 		_, _ = h.Write([]byte(text[start:min(len(text), start+(32<<10))]))
 	}
-	digest := hex.EncodeToString(h.Sum(nil))
+	next := 0
+	windowsOf := func() (int, SourceWindow, bool, error) {
+		if next == len(windows) {
+			return 0, SourceWindow{}, false, nil
+		}
+		next++
+		return next - 1, windows[next-1], true, nil
+	}
+	return judgeWindows(t, j, c, ref, lang, hex.EncodeToString(h.Sum(nil)), len(windows), windowsOf, chunk, prior, save, intent, langs)
+}
+
+func judgeWindows(t *Table, j Judge, c Cache, ref, lang, digest string, count int, next func() (int, SourceWindow, bool, error), chunk int, prior []Record, save func(Record) error, intent bool, langs []string) ([]Record, error) {
+	label := lang
+	if len(langs) > 1 {
+		label = LanguageLabel(langs)
+	}
 	backend := ""
 	if b, ok := j.(Backender); ok {
 		backend = b.Backend()
@@ -38,9 +53,16 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 		if r.Ref == ref && r.SourceDigest == digest && r.Version == RecordVersion && r.Preprocessing == PreprocessingVersion && r.Catalogue == CatalogueDigest() && r.ThresholdPolicy == ThresholdPolicy && r.Backend == backend {
 			previous[r.ID] = r
 		}
+
+		if r.Ref == ref && r.SourceDigest == digest && (r.Battery == IntentBattery && r.Catalogue == IntentDigest() || r.Battery == SlopBattery && r.Catalogue == SlopDigest()) {
+			previous[r.ID] = r
+		}
 	}
 	var recs []Record
 	emit := func(r Record) error {
+		if r.Language == lang {
+			r.Language = label
+		}
 		if save != nil {
 			if err := save(r); err != nil {
 				return fmt.Errorf("%w: %w", ErrProgress, err)
@@ -72,7 +94,7 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 			for k := range found {
 				found[k].LocationReason = "localization_failed"
 			}
-		case errors.Is(err, ErrJudge) || errors.Is(err, ErrKey):
+		case errors.Is(err, ErrJudge) || errors.Is(err, ErrKey) || errors.Is(err, ErrCache):
 			for i := range recs {
 				if recs[i].ID == r.ID {
 					recs[i].Calls = r.Calls
@@ -87,7 +109,79 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 		r.Findings = found
 		return emit(r)
 	}
-	for wi, w := range windows {
+
+	stated := func(r Record, ctx Chunk) error {
+		if !intent || r.Battery != "code" {
+			return nil
+		}
+		if keys := intentKeys(r); len(keys) > 0 {
+			if old, ok := previous[intentID(r.ID, keys)]; ok {
+				old.Calls, old.Cached, old.Uncached = 0, 0, 0
+				recs = append(recs, old)
+				return nil
+			}
+		}
+		ir, asked, err := askIntent(j, c, backend, r, ctx)
+		switch {
+		case !asked:
+			return err
+		case err == nil:
+			return emit(ir)
+		case errors.Is(err, errIntentPartial):
+			return emit(failedIntent(ir, "answered_in_part"))
+		case errors.Is(err, ErrRetryExhausted):
+			return emit(failedIntent(ir, "retry_exhausted"))
+		case errors.Is(err, ErrJudge) || errors.Is(err, ErrKey) || errors.Is(err, ErrCache):
+			for i := range recs {
+				if recs[i].ID == r.ID {
+					recs[i].Calls += ir.Calls
+					recs[i].Cached += ir.Cached
+				}
+			}
+			return err
+		}
+		var refusal *RequestError
+		if errors.As(err, &refusal) {
+			return emit(failedIntent(ir, string(refusal.Reason)))
+		}
+		return emit(failedIntent(ir, "refused"))
+	}
+
+	sloped := func(r Record, ctx Chunk) error {
+		if !intent || r.Battery != "code" {
+			return nil
+		}
+		if old, ok := previous[slopID(r.ID)]; ok {
+			old.Calls, old.Cached, old.Uncached = 0, 0, 0
+			recs = append(recs, old)
+			return nil
+		}
+		sr, err := askSlop(j, c, backend, r, ctx)
+		switch {
+		case err == nil:
+			return emit(sr)
+		case errors.Is(err, errIntentPartial):
+			return emit(failedIntent(sr, "answered_in_part"))
+		case errors.Is(err, ErrRetryExhausted):
+			return emit(failedIntent(sr, "retry_exhausted"))
+		case errors.Is(err, ErrJudge) || errors.Is(err, ErrKey) || errors.Is(err, ErrCache):
+			for i := range recs {
+				if recs[i].ID == r.ID {
+					recs[i].Calls += sr.Calls
+				}
+			}
+			return err
+		}
+		return emit(failedIntent(sr, "refused"))
+	}
+	for {
+		wi, w, more, err := next()
+		if err != nil {
+			return recs, err
+		}
+		if !more {
+			break
+		}
 		batteries := []struct {
 			name, field string
 			body        Chunk
@@ -102,7 +196,7 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 			}
 			r := Record{Version: RecordVersion, SourceDigest: digest, Preprocessing: PreprocessingVersion, ThresholdPolicy: ThresholdPolicy,
 				Ref: ref, Chunk: wi, Lines: [2]int{battery.body.FirstLine, battery.body.LastLine}, Language: lang, Answers: map[string]float64{},
-				Catalogue: CatalogueDigest(), Backend: backend, Model: j.Model(), Battery: battery.name, Boundary: w.Boundary, WindowCount: len(windows)}
+				Catalogue: CatalogueDigest(), Backend: backend, Model: j.Model(), Battery: battery.name, Boundary: w.Boundary, WindowCount: count}
 			for _, it := range battery.items {
 				r.Expected = append(r.Expected, it.ID)
 			}
@@ -133,6 +227,12 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 						return recs, err
 					}
 				}
+				if err := stated(latest(recs, old.ID), w.Context); err != nil {
+					return recs, err
+				}
+				if err := sloped(latest(recs, old.ID), w.Context); err != nil {
+					return recs, err
+				}
 				continue
 			}
 			if battery.name == "code" && len(strings.TrimSpace(battery.body.Text)) < MinBlankedBytes {
@@ -144,6 +244,9 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 				continue
 			}
 			state := map[string]any{"language": lang, battery.field: battery.body.Text}
+			if len(langs) > 1 {
+				state["languages"] = langs
+			}
 			questions := windowQuestions(battery.items, battery.field, battery.body)
 
 			request, err := json.Marshal([]any{state, questions, PreprocessingVersion})
@@ -154,14 +257,17 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 			var answers map[string]float64
 			hit := false
 			if gate, ok := j.(interface{ CacheEligible() bool }); !ok || gate.CacheEligible() {
-				hit, _ = cached(c, key(), &answers)
+				if hit, err = cached(c, key(), &answers); err != nil {
+
+					return recs, err
+				}
 			}
 			if hit && !answersComplete(answers, battery.items) {
 				hit = false
 			}
 			if !hit {
 				answers, err = j.Ask(state, questions)
-				r.Calls = 1
+				r.Calls = sentCalls(err)
 			} else {
 				r.Cached = 1
 			}
@@ -202,9 +308,24 @@ func JudgeTextProgress(t *Table, j Judge, c Cache, ref, lang, text string, chunk
 					return recs, err
 				}
 			}
+			if err := stated(latest(recs, r.ID), w.Context); err != nil {
+				return recs, err
+			}
+			if err := sloped(latest(recs, r.ID), w.Context); err != nil {
+				return recs, err
+			}
 		}
 	}
 	return recs, nil
+}
+
+func latest(recs []Record, id string) Record {
+	for _, r := range recs {
+		if r.ID == id {
+			return r
+		}
+	}
+	return Record{}
 }
 
 func localizationPending(r Record) bool {
